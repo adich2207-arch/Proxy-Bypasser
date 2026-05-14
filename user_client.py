@@ -3,6 +3,7 @@ from telethon import TelegramClient, events
 from telethon.errors import SessionPasswordNeededError
 from config import API_ID, API_HASH, SESSION_NAME, BYPASSER_BOT_USERNAME
 import logging
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -20,8 +21,9 @@ class UserClient:
             asyncio.set_event_loop(loop)
         
         self.client = TelegramClient(SESSION_NAME, API_ID, API_HASH)
-        self.pending_requests = {}  # Maps message_id -> (user_chat_id, original_message_id)
-        self.response_handlers = {}  # Maps user_chat_id -> callback function
+        self.pending_requests = {}  # Maps timestamp -> (user_chat_id, callback)
+        self.last_request_time = {}  # Maps user_chat_id -> timestamp
+        self.response_timeout = 60  # seconds
         
     async def start(self):
         """Start the user client"""
@@ -33,20 +35,29 @@ class UserClient:
         async def handle_bypasser_response(event):
             """Handle responses from the bypasser bot"""
             logger.info(f"Received response from bypasser bot: {event.message.id}")
+            logger.info(f"Response text: {event.message.text[:100] if event.message.text else 'Media message'}")
             
-            # Find the corresponding user request
-            for msg_id, (user_chat_id, original_msg_id) in list(self.pending_requests.items()):
-                # Check if this response is for this request (simple approach)
-                # In production, you might need more sophisticated matching
-                if user_chat_id in self.response_handlers:
-                    callback = self.response_handlers[user_chat_id]
+            # Find the most recent pending request (FIFO approach)
+            if self.pending_requests:
+                # Get the oldest pending request
+                oldest_timestamp = min(self.pending_requests.keys())
+                user_chat_id, callback = self.pending_requests[oldest_timestamp]
+                
+                logger.info(f"Matching response to user {user_chat_id}")
+                
+                try:
+                    # Call the callback with the response
                     await callback(event.message)
-                    
-                    # Clean up
-                    del self.pending_requests[msg_id]
-                    if user_chat_id in self.response_handlers:
-                        del self.response_handlers[user_chat_id]
-                    break
+                    logger.info(f"Successfully sent response to user {user_chat_id}")
+                except Exception as e:
+                    logger.error(f"Error in callback: {e}")
+                
+                # Clean up
+                del self.pending_requests[oldest_timestamp]
+                if user_chat_id in self.last_request_time:
+                    del self.last_request_time[user_chat_id]
+            else:
+                logger.warning("Received response but no pending requests found")
     
     async def login_with_phone(self, phone_number):
         """
@@ -108,13 +119,25 @@ class UserClient:
             response_callback: Async function to call when response is received
         """
         try:
+            # Clean up old expired requests
+            current_time = time.time()
+            expired = [ts for ts, (uid, _) in self.pending_requests.items() 
+                      if current_time - ts > self.response_timeout]
+            for ts in expired:
+                logger.warning(f"Request timed out for timestamp {ts}")
+                del self.pending_requests[ts]
+            
             # Send message to bypasser bot
             message = await self.client.send_message(BYPASSER_BOT_USERNAME, link)
-            logger.info(f"Sent link to bypasser bot: {link}")
+            logger.info(f"Sent link to bypasser bot: {link} (message_id: {message.id})")
             
-            # Register the request
-            self.pending_requests[message.id] = (user_chat_id, original_msg_id)
-            self.response_handlers[user_chat_id] = response_callback
+            # Register the request with current timestamp
+            timestamp = time.time()
+            self.pending_requests[timestamp] = (user_chat_id, response_callback)
+            self.last_request_time[user_chat_id] = timestamp
+            
+            logger.info(f"Registered request for user {user_chat_id} at timestamp {timestamp}")
+            logger.info(f"Total pending requests: {len(self.pending_requests)}")
             
             return True
         except Exception as e:
