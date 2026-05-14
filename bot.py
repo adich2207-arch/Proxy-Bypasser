@@ -80,11 +80,13 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if is_logged_in:
         user_info = await user_client.get_me()
+        pending_count = len(user_client.pending_requests)
         await update.message.reply_text(
             f"✅ *Status: Connected*\n\n"
             f"👤 Account: {user_info.first_name}\n"
             f"📱 Phone: {user_info.phone}\n"
-            f"🤖 Bypasser: @{BYPASSER_BOT_USERNAME}\n\n"
+            f"🤖 Bypasser: @{BYPASSER_BOT_USERNAME}\n"
+            f"⏳ Pending requests: {pending_count}\n\n"
             f"Ready to bypass links!",
             parse_mode='Markdown'
         )
@@ -291,35 +293,61 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Send processing message
     processing_msg = await update.message.reply_text(
         "⏳ Processing your link...\n"
-        f"Sending to @{BYPASSER_BOT_USERNAME}"
+        f"Sending to @{BYPASSER_BOT_USERNAME}\n\n"
+        "⏱️ Waiting for response..."
     )
+    
+    # Track if response was received
+    response_received = {'status': False}
     
     # Define callback for when bypasser responds
     async def handle_response(message):
         """Handle response from bypasser bot"""
         try:
+            response_received['status'] = True
+            logger.info(f"Processing response for user {update.effective_chat.id}")
+            
             # Delete processing message
-            await processing_msg.delete()
+            try:
+                await processing_msg.delete()
+            except Exception as e:
+                logger.warning(f"Could not delete processing message: {e}")
             
             # Forward the response to user
             if message.text:
-                await update.message.reply_text(
-                    f"✅ *Bypassed Content:*\n\n{message.text}",
-                    parse_mode='Markdown'
+                # Send text response
+                await context.bot.send_message(
+                    chat_id=update.effective_chat.id,
+                    text=f"✅ *Bypassed Content:*\n\n{message.text}",
+                    parse_mode='Markdown',
+                    reply_to_message_id=update.message.message_id
                 )
+                logger.info(f"Sent text response to user {update.effective_chat.id}")
             elif message.media:
                 # Forward media messages
                 await message.forward_to(update.effective_chat.id)
+                logger.info(f"Forwarded media to user {update.effective_chat.id}")
+            elif message.document:
+                # Forward documents
+                await message.forward_to(update.effective_chat.id)
+                logger.info(f"Forwarded document to user {update.effective_chat.id}")
             else:
-                await update.message.reply_text(
-                    "✅ Content bypassed! (Check above)"
+                await context.bot.send_message(
+                    chat_id=update.effective_chat.id,
+                    text="✅ Content bypassed! (Check above)",
+                    reply_to_message_id=update.message.message_id
                 )
                 
         except Exception as e:
-            logger.error(f"Error handling response: {e}")
-            await update.message.reply_text(
-                f"❌ Error processing response: {str(e)}"
-            )
+            logger.error(f"Error handling response: {e}", exc_info=True)
+            try:
+                await context.bot.send_message(
+                    chat_id=update.effective_chat.id,
+                    text=f"❌ Error processing response: {str(e)}",
+                    reply_to_message_id=update.message.message_id
+                )
+            except:
+                pass
     
     # Send to bypasser bot
     try:
@@ -329,12 +357,29 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
             update.message.message_id,
             handle_response
         )
+        logger.info(f"Link sent to bypasser for user {update.effective_chat.id}")
+        
+        # Wait a bit and check if response was received
+        await asyncio.sleep(30)  # Wait 30 seconds
+        
+        if not response_received['status']:
+            try:
+                await processing_msg.edit_text(
+                    "⏳ Still waiting for response from bypasser bot...\n"
+                    "This may take a moment."
+                )
+            except:
+                pass
+                
     except Exception as e:
-        logger.error(f"Error sending to bypasser: {e}")
-        await processing_msg.edit_text(
-            f"❌ Error: {str(e)}\n\n"
-            "Please try again or contact support."
-        )
+        logger.error(f"Error sending to bypasser: {e}", exc_info=True)
+        try:
+            await processing_msg.edit_text(
+                f"❌ Error: {str(e)}\n\n"
+                "Please try again or contact support."
+            )
+        except:
+            pass
 
 
 async def post_init(application: Application):
