@@ -16,6 +16,9 @@ BYPASSER_BOT_USERNAME = os.getenv('BYPASSER_BOT_USERNAME')
 # Session Configuration
 SESSION_NAME = os.getenv('SESSION_NAME', 'user_session')
 
+# Database Configuration (optional - for persistent sessions)
+DATABASE_URL = os.getenv('DATABASE_URL')
+
 # Validate required configuration
 def validate_config():
     """Validate that all required configuration is present"""
