@@ -18,4 +18,4 @@ services:
       - key: SESSION_NAME
         value: user_session
       - key: PYTHON_VERSION
-        value: 3.11.0
+        value: 3.11.9
