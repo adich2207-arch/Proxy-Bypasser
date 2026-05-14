@@ -68,10 +68,72 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/start - Start the bot\n"
         "/login - Login with your Telegram account\n"
         "/status - Check connection status\n"
+        "/test - Test connection to bypasser bot\n"
+        "/debug - Show debug information\n"
         "/help - Show this help message\n\n"
         f"*Bypasser Bot:* @{BYPASSER_BOT_USERNAME}",
         parse_mode='Markdown'
     )
+
+
+async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Test command to verify bypasser bot connection"""
+    is_logged_in = await user_client.is_logged_in()
+    
+    if not is_logged_in:
+        await update.message.reply_text(
+            "❌ Not logged in. Use /login first."
+        )
+        return
+    
+    await update.message.reply_text(
+        "🧪 Testing connection to bypasser bot...\n"
+        "Sending test message: 'test'"
+    )
+    
+    try:
+        # Send test message
+        test_msg = await user_client.client.send_message(BYPASSER_BOT_USERNAME, "test")
+        await update.message.reply_text(
+            f"✅ Test message sent successfully!\n"
+            f"Message ID: {test_msg.id}\n\n"
+            f"Check if bypasser bot responds. If it does, the bot should forward the response to you."
+        )
+    except Exception as e:
+        await update.message.reply_text(
+            f"❌ Error sending test message: {str(e)}"
+        )
+
+
+async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show debug information"""
+    is_logged_in = await user_client.is_logged_in()
+    
+    if not is_logged_in:
+        await update.message.reply_text(
+            "❌ Not logged in. Use /login first."
+        )
+        return
+    
+    pending_count = len(user_client.pending_requests)
+    bypasser_id = user_client.bypasser_bot_id
+    
+    debug_info = (
+        f"🔍 *Debug Information*\n\n"
+        f"*Connection:*\n"
+        f"Logged in: {'✅ Yes' if is_logged_in else '❌ No'}\n"
+        f"Bypasser bot: @{BYPASSER_BOT_USERNAME}\n"
+        f"Bypasser bot ID: {bypasser_id if bypasser_id else '❌ Not found'}\n\n"
+        f"*Requests:*\n"
+        f"Pending requests: {pending_count}\n"
+        f"Timeout: {user_client.response_timeout}s\n\n"
+        f"*Event Handler:*\n"
+        f"Listening for: All incoming messages\n"
+        f"Filtering by: Username match\n\n"
+        f"Send a test link to see if responses are captured."
+    )
+    
+    await update.message.reply_text(debug_info, parse_mode='Markdown')
 
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -424,6 +486,8 @@ def main():
         application.add_handler(CommandHandler('start', start))
         application.add_handler(CommandHandler('help', help_command))
         application.add_handler(CommandHandler('status', status_command))
+        application.add_handler(CommandHandler('test', test_command))
+        application.add_handler(CommandHandler('debug', debug_command))
         application.add_handler(login_conv_handler)
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_link))
         
