@@ -447,10 +447,19 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def post_init(application: Application):
     """Initialize user client after bot starts"""
     try:
-        await user_client.start()
-        logger.info("User client initialized")
+        # Check if already authorized before starting
+        is_authorized = await user_client.is_logged_in()
+        
+        if is_authorized:
+            await user_client.start()
+            logger.info("User client initialized and logged in")
+        else:
+            logger.warning("User client not logged in - user needs to use /login command")
+            # Don't start the client if not logged in, it will prompt for phone
+            
     except Exception as e:
         logger.error(f"Error initializing user client: {e}")
+        logger.warning("User client not started - user needs to use /login command")
 
 
 async def post_shutdown(application: Application):
