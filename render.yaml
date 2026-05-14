@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: telegram-bypasser-bot
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: API_ID
+        sync: false
+      - key: API_HASH
+        sync: false
+      - key: BYPASSER_BOT_USERNAME
+        sync: false
+      - key: SESSION_NAME
+        value: user_session
+      - key: PYTHON_VERSION
+        value: 3.11.0
