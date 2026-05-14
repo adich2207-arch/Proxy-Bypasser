@@ -28,7 +28,17 @@ class UserClient:
         
     async def start(self):
         """Start the user client"""
-        await self.client.start()
+        # Connect without starting (to avoid phone prompt)
+        if not self.client.is_connected():
+            await self.client.connect()
+        
+        # Check if authorized
+        is_authorized = await self.client.is_user_authorized()
+        
+        if not is_authorized:
+            logger.warning("User client not authorized - waiting for /login")
+            return False
+        
         logger.info("User client started successfully")
         
         # Get bypasser bot entity to ensure proper event filtering
@@ -84,6 +94,8 @@ class UserClient:
             else:
                 # Not from bypasser bot, ignore
                 pass
+        
+        return True
     
     async def login_with_phone(self, phone_number):
         """
