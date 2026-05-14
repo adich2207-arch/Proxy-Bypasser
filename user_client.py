@@ -1,7 +1,9 @@
 import asyncio
 from telethon import TelegramClient, events
+from telethon.sessions import StringSession
 from telethon.errors import SessionPasswordNeededError
-from config import API_ID, API_HASH, SESSION_NAME, BYPASSER_BOT_USERNAME
+from config import API_ID, API_HASH, SESSION_NAME, BYPASSER_BOT_USERNAME, DATABASE_URL
+from db_session import DatabaseSessionStore
 import logging
 import time
 
@@ -20,7 +22,30 @@ class UserClient:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
         
-        self.client = TelegramClient(SESSION_NAME, API_ID, API_HASH)
+        # Initialize database session store if DATABASE_URL is provided
+        self.db_store = None
+        if DATABASE_URL:
+            try:
+                self.db_store = DatabaseSessionStore(DATABASE_URL)
+                logger.info("Database session store enabled")
+                
+                # Try to load existing session from database
+                session_string = self.db_store.load_session(SESSION_NAME)
+                if session_string:
+                    logger.info("Loaded existing session from database")
+                    session = StringSession(session_string)
+                else:
+                    logger.info("No existing session in database, creating new")
+                    session = StringSession()
+            except Exception as e:
+                logger.error(f"Error initializing database session store: {e}")
+                logger.warning("Falling back to file-based session")
+                session = SESSION_NAME
+        else:
+            logger.warning("DATABASE_URL not set, using file-based session (will not persist on Render free tier)")
+            session = SESSION_NAME
+        
+        self.client = TelegramClient(session, API_ID, API_HASH)
         self.pending_requests = {}  # Maps timestamp -> (user_chat_id, callback)
         self.last_request_time = {}  # Maps user_chat_id -> timestamp
         self.response_timeout = 60  # seconds
@@ -130,6 +155,15 @@ class UserClient:
             await self.client.sign_in(phone_number, code, phone_code_hash=phone_code_hash)
             logger.info("Successfully logged in")
             
+            # Save session to database if available
+            if self.db_store:
+                try:
+                    session_string = self.client.session.save()
+                    self.db_store.save_session(SESSION_NAME, session_string)
+                    logger.info("✅ Session saved to database - will persist across restarts!")
+                except Exception as e:
+                    logger.error(f"Error saving session to database: {e}")
+            
             # NOW register the event handler since we're logged in
             self._register_event_handler()
             logger.info("Event handler registered after login")
@@ -147,6 +181,15 @@ class UserClient:
         try:
             await self.client.sign_in(password=password)
             logger.info("Successfully logged in with 2FA")
+            
+            # Save session to database if available
+            if self.db_store:
+                try:
+                    session_string = self.client.session.save()
+                    self.db_store.save_session(SESSION_NAME, session_string)
+                    logger.info("✅ Session saved to database - will persist across restarts!")
+                except Exception as e:
+                    logger.error(f"Error saving session to database: {e}")
             
             # NOW register the event handler since we're logged in
             self._register_event_handler()
@@ -213,6 +256,14 @@ class UserClient:
     async def stop(self):
         """Stop the user client"""
         await self.client.disconnect()
+        
+        # Close database connection if exists
+        if self.db_store:
+            try:
+                self.db_store.close()
+            except Exception as e:
+                logger.error(f"Error closing database: {e}")
+        
         logger.info("User client stopped")
 
 
