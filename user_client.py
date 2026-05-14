@@ -91,8 +91,9 @@ class UserClient:
                     except Exception as e:
                         logger.error(f"❌ Error in callback: {e}", exc_info=True)
                     
-                    # Clean up
-                    del self.pending_requests[oldest_timestamp]
+                    # Clean up (check if still exists, as bypasser might send multiple messages)
+                    if oldest_timestamp in self.pending_requests:
+                        del self.pending_requests[oldest_timestamp]
                     if user_chat_id in self.last_request_time:
                         del self.last_request_time[user_chat_id]
                     
