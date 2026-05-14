@@ -27,7 +27,7 @@ class UserClient:
         self.bypasser_bot_id = None  # Will be set in start()
         
     async def start(self):
-        """Start the user client"""
+        """Start the user client and set up event handlers"""
         # Connect without starting (to avoid phone prompt)
         if not self.client.is_connected():
             await self.client.connect()
@@ -50,6 +50,15 @@ class UserClient:
             logger.error(f"Could not find bypasser bot @{BYPASSER_BOT_USERNAME}: {e}")
             self.bypasser_bot_id = None
         
+        # Register event handler
+        self._register_event_handler()
+        
+        return True
+    
+    def _register_event_handler(self):
+        """Register the event handler for bypasser bot responses"""
+        logger.info("Registering event handler for bypasser bot responses")
+        
         # Set up message handler for bypasser bot responses
         @self.client.on(events.NewMessage(incoming=True))
         async def handle_bypasser_response(event):
@@ -58,7 +67,7 @@ class UserClient:
             sender = await event.get_sender()
             
             # Log all incoming messages for debugging
-            logger.info(f"Received message from {sender.username if sender.username else sender.id}")
+            logger.info(f"📨 Received message from {sender.username if sender.username else sender.id}")
             
             # Check if it's from the bypasser bot
             if sender.username and sender.username.lower() == BYPASSER_BOT_USERNAME.lower().replace('@', ''):
@@ -92,10 +101,10 @@ class UserClient:
                     logger.warning("⚠️ Received response but no pending requests found!")
                     logger.warning("This might mean the request timed out or was already processed")
             else:
-                # Not from bypasser bot, ignore
-                pass
+                # Not from bypasser bot, log and ignore
+                logger.debug(f"Message from {sender.username if sender.username else sender.id} - not bypasser bot, ignoring")
         
-        return True
+        logger.info("✅ Event handler registered successfully")
     
     async def login_with_phone(self, phone_number):
         """
@@ -119,6 +128,11 @@ class UserClient:
         try:
             await self.client.sign_in(phone_number, code, phone_code_hash=phone_code_hash)
             logger.info("Successfully logged in")
+            
+            # NOW register the event handler since we're logged in
+            self._register_event_handler()
+            logger.info("Event handler registered after login")
+            
             return True
         except SessionPasswordNeededError:
             # 2FA is enabled
@@ -132,6 +146,11 @@ class UserClient:
         try:
             await self.client.sign_in(password=password)
             logger.info("Successfully logged in with 2FA")
+            
+            # NOW register the event handler since we're logged in
+            self._register_event_handler()
+            logger.info("Event handler registered after 2FA login")
+            
             return True
         except Exception as e:
             logger.error(f"Error verifying password: {e}")
