@@ -24,40 +24,66 @@ class UserClient:
         self.pending_requests = {}  # Maps timestamp -> (user_chat_id, callback)
         self.last_request_time = {}  # Maps user_chat_id -> timestamp
         self.response_timeout = 60  # seconds
+        self.bypasser_bot_id = None  # Will be set in start()
         
     async def start(self):
         """Start the user client"""
         await self.client.start()
         logger.info("User client started successfully")
         
+        # Get bypasser bot entity to ensure proper event filtering
+        try:
+            bypasser_entity = await self.client.get_entity(BYPASSER_BOT_USERNAME)
+            logger.info(f"Found bypasser bot: {bypasser_entity.id} - {bypasser_entity.username}")
+            self.bypasser_bot_id = bypasser_entity.id
+        except Exception as e:
+            logger.error(f"Could not find bypasser bot @{BYPASSER_BOT_USERNAME}: {e}")
+            self.bypasser_bot_id = None
+        
         # Set up message handler for bypasser bot responses
-        @self.client.on(events.NewMessage(from_users=BYPASSER_BOT_USERNAME))
+        @self.client.on(events.NewMessage(incoming=True))
         async def handle_bypasser_response(event):
             """Handle responses from the bypasser bot"""
-            logger.info(f"Received response from bypasser bot: {event.message.id}")
-            logger.info(f"Response text: {event.message.text[:100] if event.message.text else 'Media message'}")
+            # Check if message is from bypasser bot
+            sender = await event.get_sender()
             
-            # Find the most recent pending request (FIFO approach)
-            if self.pending_requests:
-                # Get the oldest pending request
-                oldest_timestamp = min(self.pending_requests.keys())
-                user_chat_id, callback = self.pending_requests[oldest_timestamp]
+            # Log all incoming messages for debugging
+            logger.info(f"Received message from {sender.username if sender.username else sender.id}")
+            
+            # Check if it's from the bypasser bot
+            if sender.username and sender.username.lower() == BYPASSER_BOT_USERNAME.lower().replace('@', ''):
+                logger.info(f"✅ Message is from bypasser bot!")
+                logger.info(f"Response message ID: {event.message.id}")
+                logger.info(f"Response text preview: {event.message.text[:100] if event.message.text else 'Media/Document message'}")
                 
-                logger.info(f"Matching response to user {user_chat_id}")
-                
-                try:
-                    # Call the callback with the response
-                    await callback(event.message)
-                    logger.info(f"Successfully sent response to user {user_chat_id}")
-                except Exception as e:
-                    logger.error(f"Error in callback: {e}")
-                
-                # Clean up
-                del self.pending_requests[oldest_timestamp]
-                if user_chat_id in self.last_request_time:
-                    del self.last_request_time[user_chat_id]
+                # Find the most recent pending request (FIFO approach)
+                if self.pending_requests:
+                    # Get the oldest pending request
+                    oldest_timestamp = min(self.pending_requests.keys())
+                    user_chat_id, callback = self.pending_requests[oldest_timestamp]
+                    
+                    logger.info(f"Matching response to user {user_chat_id}")
+                    logger.info(f"Pending requests before: {len(self.pending_requests)}")
+                    
+                    try:
+                        # Call the callback with the response
+                        await callback(event.message)
+                        logger.info(f"✅ Successfully called callback for user {user_chat_id}")
+                    except Exception as e:
+                        logger.error(f"❌ Error in callback: {e}", exc_info=True)
+                    
+                    # Clean up
+                    del self.pending_requests[oldest_timestamp]
+                    if user_chat_id in self.last_request_time:
+                        del self.last_request_time[user_chat_id]
+                    
+                    logger.info(f"Pending requests after: {len(self.pending_requests)}")
+                else:
+                    logger.warning("⚠️ Received response but no pending requests found!")
+                    logger.warning("This might mean the request timed out or was already processed")
             else:
-                logger.warning("Received response but no pending requests found")
+                # Not from bypasser bot, ignore
+                pass
     
     async def login_with_phone(self, phone_number):
         """
