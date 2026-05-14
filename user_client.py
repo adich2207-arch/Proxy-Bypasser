@@ -11,6 +11,14 @@ class UserClient:
     """Manages the user's Telegram client for interacting with bypasser bot"""
     
     def __init__(self):
+        # Create event loop if it doesn't exist (fixes Python 3.10+ compatibility)
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            # No event loop running, create a new one
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
         self.client = TelegramClient(SESSION_NAME, API_ID, API_HASH)
         self.pending_requests = {}  # Maps message_id -> (user_chat_id, original_message_id)
         self.response_handlers = {}  # Maps user_chat_id -> callback function
