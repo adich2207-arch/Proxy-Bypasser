@@ -1,271 +1,187 @@
-import asyncio
+import logging
+import os
+import time
+
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from telethon.errors import SessionPasswordNeededError
-from config import API_ID, API_HASH, SESSION_NAME, BYPASSER_BOT_USERNAME, DATABASE_URL
-from db_session import DatabaseSessionStore
-import logging
-import time
+
+from config import API_ID, API_HASH, SESSION_NAME, BYPASSER_BOT_USERNAME
 
 logger = logging.getLogger(__name__)
 
 
 class UserClient:
     """Manages the user's Telegram client for interacting with bypasser bot"""
-    
+
     def __init__(self):
-        # Create event loop if it doesn't exist (fixes Python 3.10+ compatibility)
-        try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            # No event loop running, create a new one
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        
-        # Initialize database session store if DATABASE_URL is provided
-        self.db_store = None
-        if DATABASE_URL:
-            try:
-                self.db_store = DatabaseSessionStore(DATABASE_URL)
-                logger.info("Database session store enabled")
-                
-                # Try to load existing session from database
-                session_string = self.db_store.load_session(SESSION_NAME)
-                if session_string:
-                    logger.info("Loaded existing session from database")
-                    session = StringSession(session_string)
-                else:
-                    logger.info("No existing session in database, creating new")
-                    session = StringSession()
-            except Exception as e:
-                logger.error(f"Error initializing database session store: {e}")
-                logger.warning("Falling back to file-based session")
-                session = SESSION_NAME
+        # Build the session object — no network calls here, just object creation
+        string_session = os.environ.get('STRING_SESSION', '').strip()
+        if string_session:
+            logger.info("Using STRING_SESSION from environment variable")
+            session = StringSession(string_session)
         else:
-            logger.warning("DATABASE_URL not set, using file-based session (will not persist on Render free tier)")
+            logger.warning(
+                "STRING_SESSION not set — using file-based session. "
+                "This will NOT persist across Render redeploys."
+            )
             session = SESSION_NAME
-        
+
+        # TelegramClient creation is safe here — it does NOT connect yet
         self.client = TelegramClient(session, API_ID, API_HASH)
-        self.pending_requests = {}  # Maps timestamp -> (user_chat_id, callback)
-        self.last_request_time = {}  # Maps user_chat_id -> timestamp
-        self.response_timeout = 60  # seconds
-        self.bypasser_bot_id = None  # Will be set in start()
-        
+        self.pending_requests = {}   # timestamp -> (user_chat_id, callback)
+        self.last_request_time = {}  # user_chat_id -> timestamp
+        self.response_timeout = 60   # seconds
+        self.bypasser_bot_id = None
+        self._handler_registered = False
+
     async def start(self):
-        """Start the user client and set up event handlers"""
-        # Connect without starting (to avoid phone prompt)
+        """Connect, verify auth, resolve bypasser entity, register event handler"""
         if not self.client.is_connected():
             await self.client.connect()
-        
-        # Check if authorized
-        is_authorized = await self.client.is_user_authorized()
-        
-        if not is_authorized:
-            logger.warning("User client not authorized - waiting for /login")
+
+        if not await self.client.is_user_authorized():
+            logger.warning("User client not authorized — waiting for /login")
             return False
-        
+
         logger.info("User client started successfully")
-        
-        # Get bypasser bot entity to ensure proper event filtering
+        self._log_session_string()
+
         try:
-            bypasser_entity = await self.client.get_entity(BYPASSER_BOT_USERNAME)
-            logger.info(f"Found bypasser bot: {bypasser_entity.id} - {bypasser_entity.username}")
-            self.bypasser_bot_id = bypasser_entity.id
+            entity = await self.client.get_entity(BYPASSER_BOT_USERNAME)
+            self.bypasser_bot_id = entity.id
+            logger.info(f"Found bypasser bot: {entity.id} (@{entity.username})")
         except Exception as e:
             logger.error(f"Could not find bypasser bot @{BYPASSER_BOT_USERNAME}: {e}")
-            self.bypasser_bot_id = None
-        
-        # Register event handler
+
         self._register_event_handler()
-        
         return True
-    
+
+    def _log_session_string(self):
+        """Print session string to logs — copy it into STRING_SESSION env var on Render"""
+        try:
+            session_string = self.client.session.save()
+            if session_string:
+                logger.info("=" * 60)
+                logger.info("COPY THIS → set as STRING_SESSION env var on Render so session survives redeploys:")
+                logger.info(session_string)
+                logger.info("=" * 60)
+        except Exception as e:
+            logger.warning(f"Could not export session string: {e}")
+
     def _register_event_handler(self):
-        """Register the event handler for bypasser bot responses"""
+        """Register Telethon event handler (idempotent — only registers once)"""
+        if self._handler_registered:
+            logger.info("Event handler already registered, skipping")
+            return
+
         logger.info("Registering event handler for bypasser bot responses")
-        
-        # Set up message handler for bypasser bot responses
+
         @self.client.on(events.NewMessage(incoming=True))
         async def handle_bypasser_response(event):
-            """Handle responses from the bypasser bot"""
-            # Check if message is from bypasser bot
-            sender = await event.get_sender()
-            
-            # Log all incoming messages for debugging
-            logger.info(f"📨 Received message from {sender.username if sender.username else sender.id}")
-            
-            # Check if it's from the bypasser bot
-            if sender.username and sender.username.lower() == BYPASSER_BOT_USERNAME.lower().replace('@', ''):
-                logger.info(f"✅ Message is from bypasser bot!")
-                logger.info(f"Response message ID: {event.message.id}")
-                logger.info(f"Response text preview: {event.message.text[:100] if event.message.text else 'Media/Document message'}")
-                
-                # Find the most recent pending request (FIFO approach)
-                if self.pending_requests:
-                    # Get the oldest pending request
-                    oldest_timestamp = min(self.pending_requests.keys())
-                    user_chat_id, callback = self.pending_requests[oldest_timestamp]
-                    
-                    logger.info(f"Matching response to user {user_chat_id}")
-                    logger.info(f"Pending requests before: {len(self.pending_requests)}")
-                    
-                    try:
-                        # Call the callback with the response
-                        await callback(event.message)
-                        logger.info(f"✅ Successfully called callback for user {user_chat_id}")
-                    except Exception as e:
-                        logger.error(f"❌ Error in callback: {e}", exc_info=True)
-                    
-                    # Clean up (check if still exists, as bypasser might send multiple messages)
-                    if oldest_timestamp in self.pending_requests:
-                        del self.pending_requests[oldest_timestamp]
-                    if user_chat_id in self.last_request_time:
-                        del self.last_request_time[user_chat_id]
-                    
-                    logger.info(f"Pending requests after: {len(self.pending_requests)}")
+            try:
+                sender = await event.get_sender()
+                sender_username = getattr(sender, 'username', None)
+                logger.info(f"📨 Incoming message from {sender_username or sender.id}")
+
+                target = BYPASSER_BOT_USERNAME.lower().lstrip('@')
+                if sender_username and sender_username.lower() == target:
+                    logger.info("✅ Message is from bypasser bot")
+
+                    if self.pending_requests:
+                        oldest_ts = min(self.pending_requests.keys())
+                        user_chat_id, callback = self.pending_requests[oldest_ts]
+                        logger.info(f"Dispatching response to user {user_chat_id}")
+                        try:
+                            await callback(event.message)
+                            logger.info(f"✅ Callback executed for user {user_chat_id}")
+                        except Exception as e:
+                            logger.error(f"❌ Callback error: {e}", exc_info=True)
+                        self.pending_requests.pop(oldest_ts, None)
+                        self.last_request_time.pop(user_chat_id, None)
+                    else:
+                        logger.warning("⚠️ Response received but no pending requests")
                 else:
-                    logger.warning("⚠️ Received response but no pending requests found!")
-                    logger.warning("This might mean the request timed out or was already processed")
-            else:
-                # Not from bypasser bot, log and ignore
-                logger.debug(f"Message from {sender.username if sender.username else sender.id} - not bypasser bot, ignoring")
-        
-        logger.info("✅ Event handler registered successfully")
-    
+                    logger.debug(f"Ignoring message from {sender_username or sender.id}")
+            except Exception as e:
+                logger.error(f"Error in event handler: {e}", exc_info=True)
+
+        self._handler_registered = True
+        logger.info("✅ Event handler registered")
+
     async def login_with_phone(self, phone_number):
-        """
-        Initiate login process with phone number
-        Returns: phone_code_hash needed for verification
-        """
-        try:
+        """Send OTP to phone number, return phone_code_hash"""
+        if not self.client.is_connected():
             await self.client.connect()
-            result = await self.client.send_code_request(phone_number)
-            logger.info(f"Code sent to {phone_number}")
-            return result.phone_code_hash
-        except Exception as e:
-            logger.error(f"Error sending code: {e}")
-            raise
-    
+        result = await self.client.send_code_request(phone_number)
+        logger.info(f"OTP sent to {phone_number}")
+        return result.phone_code_hash
+
     async def verify_code(self, phone_number, code, phone_code_hash):
-        """
-        Verify the OTP code
-        Returns: True if successful, raises exception otherwise
-        """
+        """Verify OTP code"""
         try:
             await self.client.sign_in(phone_number, code, phone_code_hash=phone_code_hash)
-            logger.info("Successfully logged in")
-            
-            # Save session to database if available
-            if self.db_store:
-                try:
-                    session_string = self.client.session.save()
-                    self.db_store.save_session(SESSION_NAME, session_string)
-                    logger.info("✅ Session saved to database - will persist across restarts!")
-                except Exception as e:
-                    logger.error(f"Error saving session to database: {e}")
-            
-            # NOW register the event handler since we're logged in
+            logger.info("Signed in successfully")
+            self._log_session_string()
             self._register_event_handler()
-            logger.info("Event handler registered after login")
-            
             return True
         except SessionPasswordNeededError:
-            # 2FA is enabled
             raise Exception("2FA_REQUIRED")
-        except Exception as e:
-            logger.error(f"Error verifying code: {e}")
-            raise
-    
+
     async def verify_password(self, password):
-        """Verify 2FA password if required"""
-        try:
-            await self.client.sign_in(password=password)
-            logger.info("Successfully logged in with 2FA")
-            
-            # Save session to database if available
-            if self.db_store:
-                try:
-                    session_string = self.client.session.save()
-                    self.db_store.save_session(SESSION_NAME, session_string)
-                    logger.info("✅ Session saved to database - will persist across restarts!")
-                except Exception as e:
-                    logger.error(f"Error saving session to database: {e}")
-            
-            # NOW register the event handler since we're logged in
-            self._register_event_handler()
-            logger.info("Event handler registered after 2FA login")
-            
-            return True
-        except Exception as e:
-            logger.error(f"Error verifying password: {e}")
-            raise
-    
+        """Verify 2FA password"""
+        await self.client.sign_in(password=password)
+        logger.info("Signed in with 2FA successfully")
+        self._log_session_string()
+        self._register_event_handler()
+        return True
+
     async def is_logged_in(self):
-        """Check if user is already logged in"""
+        """Return True if the user session is authorized"""
         try:
-            await self.client.connect()
+            if not self.client.is_connected():
+                await self.client.connect()
             return await self.client.is_user_authorized()
         except Exception as e:
             logger.error(f"Error checking login status: {e}")
             return False
-    
+
     async def send_to_bypasser(self, link, user_chat_id, original_msg_id, response_callback):
-        """
-        Send link to bypasser bot and register callback for response
-        
-        Args:
-            link: The shortener link to bypass
-            user_chat_id: The chat ID of the user who sent the request
-            original_msg_id: The message ID of the user's request
-            response_callback: Async function to call when response is received
-        """
-        try:
-            # Clean up old expired requests
-            current_time = time.time()
-            expired = [ts for ts, (uid, _) in self.pending_requests.items() 
-                      if current_time - ts > self.response_timeout]
-            for ts in expired:
-                logger.warning(f"Request timed out for timestamp {ts}")
-                del self.pending_requests[ts]
-            
-            # Send message to bypasser bot
-            message = await self.client.send_message(BYPASSER_BOT_USERNAME, link)
-            logger.info(f"Sent link to bypasser bot: {link} (message_id: {message.id})")
-            
-            # Register the request with current timestamp
-            timestamp = time.time()
-            self.pending_requests[timestamp] = (user_chat_id, response_callback)
-            self.last_request_time[user_chat_id] = timestamp
-            
-            logger.info(f"Registered request for user {user_chat_id} at timestamp {timestamp}")
-            logger.info(f"Total pending requests: {len(self.pending_requests)}")
-            
-            return True
-        except Exception as e:
-            logger.error(f"Error sending to bypasser bot: {e}")
-            raise
-    
+        """Forward a link to the bypasser bot and register the response callback"""
+        # Clean up expired requests
+        now = time.time()
+        expired = [ts for ts in list(self.pending_requests)
+                   if now - ts > self.response_timeout]
+        for ts in expired:
+            logger.warning(f"Request timed out (ts={ts})")
+            del self.pending_requests[ts]
+
+        message = await self.client.send_message(BYPASSER_BOT_USERNAME, link)
+        logger.info(f"Sent link to bypasser (msg_id={message.id}): {link}")
+
+        ts = time.time()
+        self.pending_requests[ts] = (user_chat_id, response_callback)
+        self.last_request_time[user_chat_id] = ts
+        logger.info(f"Total pending requests: {len(self.pending_requests)}")
+        return True
+
     async def get_me(self):
-        """Get information about the logged-in user"""
+        """Return the logged-in user's info"""
         try:
             return await self.client.get_me()
         except Exception as e:
             logger.error(f"Error getting user info: {e}")
             return None
-    
+
     async def stop(self):
-        """Stop the user client"""
-        await self.client.disconnect()
-        
-        # Close database connection if exists
-        if self.db_store:
-            try:
-                self.db_store.close()
-            except Exception as e:
-                logger.error(f"Error closing database: {e}")
-        
+        """Disconnect the Telethon client"""
+        try:
+            if self.client.is_connected():
+                await self.client.disconnect()
+        except Exception:
+            pass
         logger.info("User client stopped")
 
 
-# Global instance
+# Global singleton — safe to create at import time (no network calls in __init__)
 user_client = UserClient()
