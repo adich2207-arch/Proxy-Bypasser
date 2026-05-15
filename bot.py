@@ -65,9 +65,20 @@ def start_keyboard():
     ])
 
 
+def strip_markdown(text: str) -> str:
+    """Remove Telegram markdown symbols (* _ ` ~) from text."""
+    return re.sub(r'[*_`~]', '', text)
+
+
 def format_bypass_response(text: str) -> str:
-    """Reformat bypasser bot response with Unicode bold labels."""
-    # Replace the other bot's username with ours
+    """
+    Strip incoming markdown asterisks, replace bot username,
+    then reformat with clean Unicode bold labels.
+    """
+    # 1. Strip all markdown symbols (the asterisks causing literal * display)
+    text = strip_markdown(text)
+
+    # 2. Replace the other bot's username with ours
     text = text.replace('@Nick_Bypass_Bot', '@Bypasser_Max_bot')
 
     lines = text.strip().splitlines()
@@ -98,6 +109,9 @@ def format_bypass_response(text: str) -> str:
             parts = stripped.split(' ', 2)
             username = parts[2] if len(parts) > 2 else ''
             out.append(f"𝗣𝗼𝘄𝗲𝗿𝗲𝗱 𝗕𝘆 {username}")
+
+        elif stripped == '':
+            out.append('')
 
         else:
             out.append(line)
