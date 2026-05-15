@@ -4,11 +4,12 @@ import os
 import signal
 
 from aiohttp import web
-from telegram import Update, ReplyKeyboardRemove
+from telegram import Update, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
     CommandHandler,
     MessageHandler,
+    CallbackQueryHandler,
     ConversationHandler,
     filters,
     ContextTypes,
@@ -31,9 +32,43 @@ login_sessions = {}
 # Render injects PORT; default 8080
 PORT = int(os.environ.get('PORT', 8080))
 
+# Auto-delete delay in seconds (10 minutes)
+AUTO_DELETE_DELAY = 10 * 60
+
+# Developer username
+DEVELOPER_USERNAME = "Mr_1X8"
+
 
 # ---------------------------------------------------------------------------
-# Health-check server — required so Render marks deploy as "live"
+# Helpers
+# ---------------------------------------------------------------------------
+
+async def auto_delete(bot, chat_id, message_id, delay=AUTO_DELETE_DELAY):
+    """Delete a message after `delay` seconds — silently ignores errors."""
+    await asyncio.sleep(delay)
+    try:
+        await bot.delete_message(chat_id=chat_id, message_id=message_id)
+    except Exception:
+        pass
+
+
+def schedule_delete(bot, chat_id, message_id, delay=AUTO_DELETE_DELAY):
+    """Fire-and-forget auto-delete task."""
+    asyncio.create_task(auto_delete(bot, chat_id, message_id, delay))
+
+
+def start_keyboard():
+    """Inline keyboard for the /start message."""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🆘 Help", callback_data="help"),
+            InlineKeyboardButton("👨‍💻 Developed By", url=f"https://t.me/{DEVELOPER_USERNAME}"),
+        ]
+    ])
+
+
+# ---------------------------------------------------------------------------
+# Health-check server
 # ---------------------------------------------------------------------------
 
 async def health_handler(request):
@@ -58,80 +93,65 @@ async def start_health_server():
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    is_logged_in = await user_client.is_logged_in()
-
-    if is_logged_in:
-        user_info = await user_client.get_me()
-        await update.message.reply_text(
-            f"👋 Welcome {user.mention_html()}!\n\n"
-            f"✅ Bot is connected to account: {user_info.first_name}\n\n"
-            f"📎 Send me any shortener link and I'll bypass it for you!\n\n"
-            f"Commands:\n"
-            f"/start - Show this message\n"
-            f"/login - Login with your Telegram account\n"
-            f"/status - Check connection status\n"
-            f"/help - Show help message",
-            parse_mode='HTML'
-        )
-    else:
-        await update.message.reply_text(
-            f"👋 Welcome {user.mention_html()}!\n\n"
-            f"⚠️ Bot is not connected to any Telegram account.\n\n"
-            f"Please use /login to connect your account first.\n\n"
-            f"This is required to communicate with the bypasser bot (@{BYPASSER_BOT_USERNAME})",
-            parse_mode='HTML'
-        )
+    text = (
+        f"👋 𝗛𝗲𝗹𝗹𝗼, {user.first_name}!\n\n"
+        f"I am a 𝗟𝗶𝗻𝗸 𝗕𝘆𝗽𝗮𝘀𝘀𝗲𝗿 𝗕𝗼𝘁. I can bypass shortlinks and ad-gates for you.\n\n"
+        f"━━━━━━━━━━━━━━━━━━━\n\n"
+        f"🔗 𝗧𝗼 𝗯𝘆𝗽𝗮𝘀𝘀 𝗮 𝗹𝗶𝗻𝗸\n"
+        f"Simply paste any shortlink here (one at a time).\n\n"
+        f"🗑 𝗔𝘂𝘁𝗼-𝗱𝗲𝗹𝗲𝘁𝗲\n"
+        f"All my replies are automatically deleted after a few minutes to keep your chat clean and private.\n\n"
+        f"━━━━━━━━━━━━━━━━━━━\n\n"
+        f"Use /help to see all available commands."
+    )
+    sent = await update.message.reply_text(text, reply_markup=start_keyboard())
+    schedule_delete(context.bot, update.effective_chat.id, sent.message_id)
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "📖 *How to use this bot:*\n\n"
-        "1️⃣ First, login with your Telegram account using /login\n"
-        "2️⃣ Send any shortener link to the bot\n"
-        "3️⃣ The bot will forward it to the bypasser bot via your account\n"
-        "4️⃣ You'll receive the bypassed content\n\n"
-        "*Commands:*\n"
-        "/start - Start the bot\n"
-        "/login - Login with your Telegram account\n"
-        "/status - Check connection status\n"
-        "/test - Test connection to bypasser bot\n"
-        "/debug - Show debug information\n"
-        "/help - Show this help message\n\n"
-        f"*Bypasser Bot:* @{BYPASSER_BOT_USERNAME}",
-        parse_mode='Markdown'
+    text = (
+        "🆘 𝗛𝗲𝗹𝗽 & 𝗨𝘀𝗮𝗴𝗲\n\n"
+        "🚀 𝗚𝗲𝘁𝘁𝗶𝗻𝗴 𝗦𝘁𝗮𝗿𝘁𝗲𝗱:\n"
+        "Send any shortener link and the bot will instantly bypass it.\n\n"
+        "⚙️ 𝗪𝗵𝗮𝘁 𝘆𝗼𝘂 𝗴𝗲𝘁:\n"
+        "• Direct download / destination link\n"
+        "• No ads or countdown\n"
+        "• Fast processing\n\n"
+        "📌 𝗧𝗶𝗽𝘀:\n"
+        "• Make sure your link is valid\n"
+        "• Use full URLs (avoid shortened copies inside apps)\n\n"
+        "❗️ 𝗟𝗶𝗺𝗶𝘁𝗮𝘁𝗶𝗼𝗻𝘀:\n"
+        "• Some shorteners may not be supported\n"
+        "• Private or expired links won't work\n\n"
+        "✨ 𝗝𝘂𝘀𝘁 𝗱𝗿𝗼𝗽 𝘆𝗼𝘂𝗿 𝗹𝗶𝗻𝗸 𝗮𝗻𝗱 𝗹𝗲𝘁 𝘁𝗵𝗲 𝗯𝗼𝘁 𝗵𝗮𝗻𝗱𝗹𝗲 𝗲𝘃𝗲𝗿𝘆𝘁𝗵𝗶𝗻𝗴!"
     )
+    sent = await update.message.reply_text(text)
+    schedule_delete(context.bot, update.effective_chat.id, sent.message_id)
 
 
-async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await user_client.is_logged_in():
-        await update.message.reply_text("❌ Not logged in. Use /login first.")
-        return
+async def help_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle Help inline button press."""
+    query = update.callback_query
+    await query.answer()
 
-    await update.message.reply_text("🧪 Testing connection to bypasser bot...")
-    try:
-        test_msg = await user_client.client.send_message(BYPASSER_BOT_USERNAME, "test")
-        await update.message.reply_text(
-            f"✅ Test message sent! Message ID: {test_msg.id}\n\n"
-            f"Check if bypasser bot responds."
-        )
-    except Exception as e:
-        await update.message.reply_text(f"❌ Error: {str(e)}")
-
-
-async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await user_client.is_logged_in():
-        await update.message.reply_text("❌ Not logged in. Use /login first.")
-        return
-
-    await update.message.reply_text(
-        f"🔍 *Debug Information*\n\n"
-        f"Logged in: ✅ Yes\n"
-        f"Bypasser bot: @{BYPASSER_BOT_USERNAME}\n"
-        f"Bypasser bot ID: {user_client.bypasser_bot_id or '❌ Not found'}\n"
-        f"Pending requests: {len(user_client.pending_requests)}\n"
-        f"Timeout: {user_client.response_timeout}s",
-        parse_mode='Markdown'
+    text = (
+        "🆘 𝗛𝗲𝗹𝗽 & 𝗨𝘀𝗮𝗴𝗲\n\n"
+        "🚀 𝗚𝗲𝘁𝘁𝗶𝗻𝗴 𝗦𝘁𝗮𝗿𝘁𝗲𝗱:\n"
+        "Send any shortener link and the bot will instantly bypass it.\n\n"
+        "⚙️ 𝗪𝗵𝗮𝘁 𝘆𝗼𝘂 𝗴𝗲𝘁:\n"
+        "• Direct download / destination link\n"
+        "• No ads or countdown\n"
+        "• Fast processing\n\n"
+        "📌 𝗧𝗶𝗽𝘀:\n"
+        "• Make sure your link is valid\n"
+        "• Use full URLs (avoid shortened copies inside apps)\n\n"
+        "❗️ 𝗟𝗶𝗺𝗶𝘁𝗮𝘁𝗶𝗼𝗻𝘀:\n"
+        "• Some shorteners may not be supported\n"
+        "• Private or expired links won't work\n\n"
+        "✨ 𝗝𝘂𝘀𝘁 𝗱𝗿𝗼𝗽 𝘆𝗼𝘂𝗿 𝗹𝗶𝗻𝗸 𝗮𝗻𝗱 𝗹𝗲𝘁 𝘁𝗵𝗲 𝗯𝗼𝘁 𝗵𝗮𝗻𝗱𝗹𝗲 𝗲𝘃𝗲𝗿𝘆𝘁𝗵𝗶𝗻𝗴!"
     )
+    sent = await query.message.reply_text(text)
+    schedule_delete(context.bot, query.message.chat_id, sent.message_id)
 
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -139,34 +159,75 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if is_logged_in:
         user_info = await user_client.get_me()
-        await update.message.reply_text(
-            f"✅ *Status: Connected*\n\n"
+        text = (
+            f"✅ <b>Status: Connected</b>\n\n"
             f"👤 Account: {user_info.first_name}\n"
             f"📱 Phone: {user_info.phone}\n"
             f"🤖 Bypasser: @{BYPASSER_BOT_USERNAME}\n"
             f"⏳ Pending requests: {len(user_client.pending_requests)}\n\n"
-            f"Ready to bypass links!",
-            parse_mode='Markdown'
+            f"Ready to bypass links!"
         )
     else:
-        await update.message.reply_text(
-            "❌ *Status: Not Connected*\n\n"
-            "Please use /login to connect your Telegram account.",
-            parse_mode='Markdown'
+        text = (
+            "❌ <b>Status: Not Connected</b>\n\n"
+            "Please use /login to connect your Telegram account."
         )
 
+    sent = await update.message.reply_text(text, parse_mode='HTML')
+    schedule_delete(context.bot, update.effective_chat.id, sent.message_id)
+
+
+async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await user_client.is_logged_in():
+        sent = await update.message.reply_text("❌ Not logged in. Use /login first.")
+        schedule_delete(context.bot, update.effective_chat.id, sent.message_id)
+        return
+
+    sent = await update.message.reply_text("🧪 Testing connection to bypasser bot...")
+    try:
+        test_msg = await user_client.client.send_message(BYPASSER_BOT_USERNAME, "test")
+        await sent.edit_text(
+            f"✅ Test message sent!\nMessage ID: {test_msg.id}\n\nCheck if bypasser bot responds."
+        )
+    except Exception as e:
+        await sent.edit_text(f"❌ Error: {str(e)}")
+    schedule_delete(context.bot, update.effective_chat.id, sent.message_id)
+
+
+async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await user_client.is_logged_in():
+        sent = await update.message.reply_text("❌ Not logged in. Use /login first.")
+        schedule_delete(context.bot, update.effective_chat.id, sent.message_id)
+        return
+
+    text = (
+        f"🔍 <b>Debug Information</b>\n\n"
+        f"Logged in: ✅ Yes\n"
+        f"Bypasser bot: @{BYPASSER_BOT_USERNAME}\n"
+        f"Bypasser bot ID: {user_client.bypasser_bot_id or '❌ Not found'}\n"
+        f"Pending requests: {len(user_client.pending_requests)}\n"
+        f"Timeout: {user_client.response_timeout}s"
+    )
+    sent = await update.message.reply_text(text, parse_mode='HTML')
+    schedule_delete(context.bot, update.effective_chat.id, sent.message_id)
+
+
+# ---------------------------------------------------------------------------
+# Login conversation
+# ---------------------------------------------------------------------------
 
 async def login_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if await user_client.is_logged_in():
-        await update.message.reply_text("✅ Already logged in! Use /status to see details.")
+        sent = await update.message.reply_text("✅ Already logged in! Use /status to see details.")
+        schedule_delete(context.bot, update.effective_chat.id, sent.message_id)
         return ConversationHandler.END
 
     await update.message.reply_text(
-        "🔐 *Login Process*\n\n"
+        "🔐 <b>Login Process</b>\n\n"
         "Please send your phone number with country code.\n"
         "Example: +1234567890\n\n"
         "Send /cancel to abort.",
-        parse_mode='Markdown'
+        parse_mode='HTML'
     )
     return PHONE_NUMBER
 
@@ -214,10 +275,10 @@ async def receive_otp(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         user_info = await user_client.get_me()
         await update.message.reply_text(
-            f"✅ *Login Successful!*\n\n"
+            f"✅ <b>Login Successful!</b>\n\n"
             f"👤 Logged in as: {user_info.first_name}\n\n"
             f"You can now send shortener links to bypass!",
-            parse_mode='Markdown'
+            parse_mode='HTML'
         )
         return ConversationHandler.END
 
@@ -252,8 +313,8 @@ async def receive_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_info = await user_client.get_me()
         await context.bot.send_message(
             chat_id=update.effective_chat.id,
-            text=f"✅ *Login Successful!*\n\n👤 Logged in as: {user_info.first_name}\n\nYou can now send shortener links to bypass!",
-            parse_mode='Markdown'
+            text=f"✅ <b>Login Successful!</b>\n\n👤 Logged in as: {user_info.first_name}\n\nYou can now send shortener links to bypass!",
+            parse_mode='HTML'
         )
         return ConversationHandler.END
 
@@ -273,21 +334,35 @@ async def cancel_login(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
+# ---------------------------------------------------------------------------
+# Link handler
+# ---------------------------------------------------------------------------
+
 async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await user_client.is_logged_in():
-        await update.message.reply_text(
+        sent = await update.message.reply_text(
             "❌ Bot is not connected to any account.\n\nPlease use /login first."
         )
+        schedule_delete(context.bot, update.effective_chat.id, sent.message_id)
         return
 
     link = update.message.text.strip()
 
     if not (link.startswith('http://') or link.startswith('https://')):
-        await update.message.reply_text("❌ Please send a valid URL starting with http:// or https://")
+        sent = await update.message.reply_text(
+            "❌ Please send a valid URL starting with http:// or https://"
+        )
+        schedule_delete(context.bot, update.effective_chat.id, sent.message_id)
         return
 
+    # Auto-delete the user's link message
+    schedule_delete(context.bot, update.effective_chat.id, update.message.message_id)
+
     processing_msg = await update.message.reply_text(
-        f"⏳ Processing your link...\nSending to @{BYPASSER_BOT_USERNAME}\n\n⏱️ Waiting for response..."
+        f"⏳ <b>Processing your link...</b>\n"
+        f"Sending to bypasser bot\n\n"
+        f"⏱️ Please wait...",
+        parse_mode='HTML'
     )
 
     response_received = {'status': False}
@@ -301,27 +376,31 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
 
             if message.text:
-                await context.bot.send_message(
+                sent = await context.bot.send_message(
                     chat_id=update.effective_chat.id,
-                    text=f"✅ *Bypassed Content:*\n\n{message.text}",
-                    parse_mode='Markdown',
-                    reply_to_message_id=update.message.message_id
+                    text=f"✅ <b>Bypassed Successfully!</b>\n\n{message.text}",
+                    parse_mode='HTML'
                 )
+                schedule_delete(context.bot, update.effective_chat.id, sent.message_id)
             elif message.media or message.document:
-                await message.forward_to(update.effective_chat.id)
+                fwd = await message.forward_to(update.effective_chat.id)
+                if fwd:
+                    schedule_delete(context.bot, update.effective_chat.id, fwd.id)
             else:
-                await context.bot.send_message(
+                sent = await context.bot.send_message(
                     chat_id=update.effective_chat.id,
-                    text="✅ Content bypassed!",
-                    reply_to_message_id=update.message.message_id
+                    text="✅ Content bypassed!"
                 )
+                schedule_delete(context.bot, update.effective_chat.id, sent.message_id)
+
         except Exception as e:
             logger.error(f"Error in handle_response: {e}", exc_info=True)
             try:
-                await context.bot.send_message(
+                sent = await context.bot.send_message(
                     chat_id=update.effective_chat.id,
                     text=f"❌ Error processing response: {str(e)}"
                 )
+                schedule_delete(context.bot, update.effective_chat.id, sent.message_id)
             except Exception:
                 pass
 
@@ -334,8 +413,10 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not response_received['status']:
             try:
                 await processing_msg.edit_text(
-                    "⏳ Still waiting for response from bypasser bot...\nThis may take a moment."
+                    "⏳ <b>Still processing...</b>\n\nThe bypasser bot is taking longer than usual.",
+                    parse_mode='HTML'
                 )
+                schedule_delete(context.bot, update.effective_chat.id, processing_msg.message_id)
             except Exception:
                 pass
 
@@ -343,6 +424,7 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error sending to bypasser: {e}", exc_info=True)
         try:
             await processing_msg.edit_text(f"❌ Error: {str(e)}\n\nPlease try again.")
+            schedule_delete(context.bot, update.effective_chat.id, processing_msg.message_id)
         except Exception:
             pass
 
@@ -352,7 +434,6 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------------------------------------------------------------------------
 
 async def post_init(application: Application):
-    # Delete any stale webhook — this also clears the conflict lock on Telegram's side
     try:
         await application.bot.delete_webhook(drop_pending_updates=True)
         logger.info("Webhook cleared — polling mode ready")
@@ -377,7 +458,7 @@ async def post_shutdown(application: Application):
 
 
 # ---------------------------------------------------------------------------
-# Main — runs health server + bot together, handles SIGTERM cleanly
+# Main
 # ---------------------------------------------------------------------------
 
 def main():
@@ -407,13 +488,12 @@ def main():
     application.add_handler(CommandHandler('test', test_command))
     application.add_handler(CommandHandler('debug', debug_command))
     application.add_handler(login_conv)
+    application.add_handler(CallbackQueryHandler(help_callback, pattern='^help$'))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_link))
 
     async def run():
-        # Start health-check server first — Render checks this port to confirm deploy
         health_runner = await start_health_server()
 
-        # Set up graceful shutdown on SIGTERM (Render sends this to stop the service)
         stop_event = asyncio.Event()
 
         def _handle_signal():
@@ -425,7 +505,6 @@ def main():
             try:
                 loop.add_signal_handler(sig, _handle_signal)
             except NotImplementedError:
-                # Windows doesn't support add_signal_handler for all signals
                 pass
 
         try:
@@ -433,7 +512,6 @@ def main():
                 await application.initialize()
                 await application.start()
 
-                # Retry polling start in case old instance is still shutting down
                 for attempt in range(10):
                     try:
                         await application.updater.start_polling(
@@ -445,15 +523,11 @@ def main():
                     except Exception as e:
                         if "Conflict" in str(e) or "409" in str(e):
                             wait = (attempt + 1) * 5
-                            logger.warning(
-                                f"Conflict: another instance still running. "
-                                f"Retrying in {wait}s... (attempt {attempt + 1}/10)"
-                            )
+                            logger.warning(f"Conflict: retrying in {wait}s... (attempt {attempt + 1}/10)")
                             await asyncio.sleep(wait)
                         else:
                             raise
 
-                # Wait here until a shutdown signal arrives
                 await stop_event.wait()
         finally:
             logger.info("Shutting down...")
