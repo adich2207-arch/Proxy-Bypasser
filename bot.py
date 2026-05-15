@@ -75,11 +75,15 @@ def format_bypass_response(text: str) -> str:
     Strip incoming markdown asterisks, replace bot username,
     then reformat with clean Unicode bold labels.
     """
-    # 1. Strip all markdown symbols (the asterisks causing literal * display)
+    # 1. Strip all markdown symbols first
     text = strip_markdown(text)
 
-    # 2. Replace the other bot's username with ours
-    text = text.replace('@Nick_Bypass_Bot', '@Bypasser_Max_bot')
+    # 2. Replace the entire "Powered By @anything" line with our bot
+    #    Uses regex so it catches any username regardless of casing or spelling
+    text = re.sub(r'(?i)powered\s*by\s*@\S+', 'Powered By @Bypasser_Max_bot', text)
+
+    # 3. Also catch any remaining @Nick_Bypass_Bot mentions anywhere in the text
+    text = re.sub(r'(?i)@Nick_Bypass_Bot', '@Bypasser_Max_bot', text)
 
     lines = text.strip().splitlines()
     out = []
