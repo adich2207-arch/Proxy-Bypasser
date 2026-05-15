@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import re
 import signal
 
 from aiohttp import web
@@ -29,13 +30,13 @@ PHONE_NUMBER, OTP_CODE, PASSWORD = range(3)
 # Temporary login sessions
 login_sessions = {}
 
-# Render injects PORT; default 8080
+# Render injects PORT
 PORT = int(os.environ.get('PORT', 8080))
 
-# Auto-delete delay in seconds (10 minutes)
+# Auto-delete delay (10 minutes)
 AUTO_DELETE_DELAY = 10 * 60
 
-# Developer username
+# Developer Telegram username
 DEVELOPER_USERNAME = "Mr_1X8"
 
 
@@ -44,7 +45,6 @@ DEVELOPER_USERNAME = "Mr_1X8"
 # ---------------------------------------------------------------------------
 
 async def auto_delete(bot, chat_id, message_id, delay=AUTO_DELETE_DELAY):
-    """Delete a message after `delay` seconds — silently ignores errors."""
     await asyncio.sleep(delay)
     try:
         await bot.delete_message(chat_id=chat_id, message_id=message_id)
@@ -53,48 +53,56 @@ async def auto_delete(bot, chat_id, message_id, delay=AUTO_DELETE_DELAY):
 
 
 def schedule_delete(bot, chat_id, message_id, delay=AUTO_DELETE_DELAY):
-    """Fire-and-forget auto-delete task."""
     asyncio.create_task(auto_delete(bot, chat_id, message_id, delay))
 
 
-def clean_bypasser_response(text: str) -> str:
-    """
-    Extract only the bypassed link from the bypasser bot response
-    and present it cleanly — no mention of the original bot.
-    """
-    import re
-
-    bypassed_url = None
-
-    # Look for "Bypassed Link:" line and grab the URL from it
-    match = re.search(r'Bypassed Link[:\s]*✅?\s*(https?://\S+)', text, re.IGNORECASE)
-    if match:
-        bypassed_url = match.group(1).strip()
-
-    # Fallback: grab the second URL in the message (first = original, second = bypassed)
-    if not bypassed_url:
-        urls = re.findall(r'https?://\S+', text)
-        if len(urls) >= 2:
-            bypassed_url = urls[1]
-        elif len(urls) == 1:
-            bypassed_url = urls[0]
-
-    if bypassed_url:
-        return (
-            "✅ 𝗕𝘆𝗽𝗮𝘀𝘀𝗲𝗱 𝗦𝘂𝗰𝗰𝗲𝘀𝘀𝗳𝘂𝗹𝗹𝘆!\n\n"
-            f"🔗 𝗗𝗶𝗿𝗲𝗰𝘁 𝗟𝗶𝗻𝗸:\n{bypassed_url}\n\n"
-            "━━━━━━━━━━━━━━━━━━━\n"
-            "🗑 𝗧𝗵𝗶𝘀 𝗺𝗲𝘀𝘀𝗮𝗴𝗲 𝘄𝗶𝗹𝗹 𝗯𝗲 𝗱𝗲𝗹𝗲𝘁𝗲𝗱 𝗮𝘂𝘁𝗼𝗺𝗮𝘁𝗶𝗰𝗮𝗹𝗹𝘆."
-        )
-
-    # If we couldn't extract a URL, return a generic success message
-    return "✅ 𝗕𝘆𝗽𝗮𝘀𝘀𝗲𝗱 𝗦𝘂𝗰𝗰𝗲𝘀𝘀𝗳𝘂𝗹𝗹𝘆!\n\nYour link has been bypassed."
+def start_keyboard():
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("🆘 Help", callback_data="help"),
             InlineKeyboardButton("👨‍💻 Developed By", url=f"https://t.me/{DEVELOPER_USERNAME}"),
         ]
     ])
+
+
+def format_bypass_response(text: str) -> str:
+    """Reformat bypasser bot response with Unicode bold labels."""
+    # Replace the other bot's username with ours
+    text = text.replace('@Nick_Bypass_Bot', '@Bypasser_Max_bot')
+
+    lines = text.strip().splitlines()
+    out = []
+
+    for line in lines:
+        stripped = line.strip()
+
+        if re.match(r'(?i)original\s*link', stripped):
+            parts = stripped.split(':', 1)
+            rest = parts[1].strip() if len(parts) > 1 else stripped
+            out.append(f"𝗢𝗿𝗶𝗴𝗶𝗻𝗮𝗹 𝗟𝗶𝗻𝗸 : {rest}")
+
+        elif re.match(r'(?i)bypassed\s*link', stripped):
+            parts = stripped.split(':', 1)
+            rest = parts[1].strip() if len(parts) > 1 else stripped
+            out.append(f"𝗕𝘆𝗽𝗮𝘀𝘀𝗲𝗱 𝗟𝗶𝗻𝗸 : {rest}")
+
+        elif re.match(r'(?i)time\s*taken', stripped):
+            parts = stripped.split(':', 1)
+            rest = parts[1].strip() if len(parts) > 1 else stripped
+            out.append(f"𝗧𝗶𝗺𝗲 𝗧𝗮𝗸𝗲𝗻 : {rest}")
+
+        elif re.match(r'^[─\-]+$', stripped):
+            out.append(line)
+
+        elif re.match(r'(?i)powered\s*by', stripped):
+            parts = stripped.split(' ', 2)
+            username = parts[2] if len(parts) > 2 else ''
+            out.append(f"𝗣𝗼𝘄𝗲𝗿𝗲𝗱 𝗕𝘆 {username}")
+
+        else:
+            out.append(line)
+
+    return "\n".join(out)
 
 
 # ---------------------------------------------------------------------------
@@ -138,8 +146,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     schedule_delete(context.bot, update.effective_chat.id, sent.message_id)
 
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = (
+def help_text():
+    return (
         "🆘 𝗛𝗲𝗹𝗽 & 𝗨𝘀𝗮𝗴𝗲\n\n"
         "🚀 𝗚𝗲𝘁𝘁𝗶𝗻𝗴 𝗦𝘁𝗮𝗿𝘁𝗲𝗱:\n"
         "Send any shortener link and the bot will instantly bypass it.\n\n"
@@ -155,55 +163,36 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Private or expired links won't work\n\n"
         "✨ 𝗝𝘂𝘀𝘁 𝗱𝗿𝗼𝗽 𝘆𝗼𝘂𝗿 𝗹𝗶𝗻𝗸 𝗮𝗻𝗱 𝗹𝗲𝘁 𝘁𝗵𝗲 𝗯𝗼𝘁 𝗵𝗮𝗻𝗱𝗹𝗲 𝗲𝘃𝗲𝗿𝘆𝘁𝗵𝗶𝗻𝗴!"
     )
-    sent = await update.message.reply_text(text)
+
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    sent = await update.message.reply_text(help_text())
     schedule_delete(context.bot, update.effective_chat.id, sent.message_id)
 
 
 async def help_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle Help inline button press."""
     query = update.callback_query
     await query.answer()
-
-    text = (
-        "🆘 𝗛𝗲𝗹𝗽 & 𝗨𝘀𝗮𝗴𝗲\n\n"
-        "🚀 𝗚𝗲𝘁𝘁𝗶𝗻𝗴 𝗦𝘁𝗮𝗿𝘁𝗲𝗱:\n"
-        "Send any shortener link and the bot will instantly bypass it.\n\n"
-        "⚙️ 𝗪𝗵𝗮𝘁 𝘆𝗼𝘂 𝗴𝗲𝘁:\n"
-        "• Direct download / destination link\n"
-        "• No ads or countdown\n"
-        "• Fast processing\n\n"
-        "📌 𝗧𝗶𝗽𝘀:\n"
-        "• Make sure your link is valid\n"
-        "• Use full URLs (avoid shortened copies inside apps)\n\n"
-        "❗️ 𝗟𝗶𝗺𝗶𝘁𝗮𝘁𝗶𝗼𝗻𝘀:\n"
-        "• Some shorteners may not be supported\n"
-        "• Private or expired links won't work\n\n"
-        "✨ 𝗝𝘂𝘀𝘁 𝗱𝗿𝗼𝗽 𝘆𝗼𝘂𝗿 𝗹𝗶𝗻𝗸 𝗮𝗻𝗱 𝗹𝗲𝘁 𝘁𝗵𝗲 𝗯𝗼𝘁 𝗵𝗮𝗻𝗱𝗹𝗲 𝗲𝘃𝗲𝗿𝘆𝘁𝗵𝗶𝗻𝗴!"
-    )
-    sent = await query.message.reply_text(text)
+    sent = await query.message.reply_text(help_text())
     schedule_delete(context.bot, query.message.chat_id, sent.message_id)
 
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_logged_in = await user_client.is_logged_in()
-
     if is_logged_in:
         user_info = await user_client.get_me()
         text = (
-            f"✅ <b>Status: Connected</b>\n\n"
+            f"✅ 𝗦𝘁𝗮𝘁𝘂𝘀: 𝗖𝗼𝗻𝗻𝗲𝗰𝘁𝗲𝗱\n\n"
             f"👤 Account: {user_info.first_name}\n"
             f"📱 Phone: {user_info.phone}\n"
             f"🤖 Bypasser: @{BYPASSER_BOT_USERNAME}\n"
-            f"⏳ Pending requests: {len(user_client.pending_requests)}\n\n"
+            f"⏳ Pending: {len(user_client.pending_requests)}\n\n"
             f"Ready to bypass links!"
         )
     else:
-        text = (
-            "❌ <b>Status: Not Connected</b>\n\n"
-            "Please use /login to connect your Telegram account."
-        )
+        text = "❌ 𝗦𝘁𝗮𝘁𝘂𝘀: 𝗡𝗼𝘁 𝗖𝗼𝗻𝗻𝗲𝗰𝘁𝗲𝗱\n\nPlease use /login to connect your Telegram account."
 
-    sent = await update.message.reply_text(text, parse_mode='HTML')
+    sent = await update.message.reply_text(text)
     schedule_delete(context.bot, update.effective_chat.id, sent.message_id)
 
 
@@ -216,9 +205,7 @@ async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sent = await update.message.reply_text("🧪 Testing connection to bypasser bot...")
     try:
         test_msg = await user_client.client.send_message(BYPASSER_BOT_USERNAME, "test")
-        await sent.edit_text(
-            f"✅ Test message sent!\nMessage ID: {test_msg.id}\n\nCheck if bypasser bot responds."
-        )
+        await sent.edit_text(f"✅ Test message sent! ID: {test_msg.id}")
     except Exception as e:
         await sent.edit_text(f"❌ Error: {str(e)}")
     schedule_delete(context.bot, update.effective_chat.id, sent.message_id)
@@ -231,14 +218,14 @@ async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     text = (
-        f"🔍 <b>Debug Information</b>\n\n"
+        f"🔍 𝗗𝗲𝗯𝘂𝗴 𝗜𝗻𝗳𝗼\n\n"
         f"Logged in: ✅ Yes\n"
-        f"Bypasser bot: @{BYPASSER_BOT_USERNAME}\n"
-        f"Bypasser bot ID: {user_client.bypasser_bot_id or '❌ Not found'}\n"
-        f"Pending requests: {len(user_client.pending_requests)}\n"
+        f"Bypasser: @{BYPASSER_BOT_USERNAME}\n"
+        f"Bypasser ID: {user_client.bypasser_bot_id or '❌ Not found'}\n"
+        f"Pending: {len(user_client.pending_requests)}\n"
         f"Timeout: {user_client.response_timeout}s"
     )
-    sent = await update.message.reply_text(text, parse_mode='HTML')
+    sent = await update.message.reply_text(text)
     schedule_delete(context.bot, update.effective_chat.id, sent.message_id)
 
 
@@ -253,22 +240,18 @@ async def login_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     await update.message.reply_text(
-        "🔐 <b>Login Process</b>\n\n"
+        "🔐 𝗟𝗼𝗴𝗶𝗻 𝗣𝗿𝗼𝗰𝗲𝘀𝘀\n\n"
         "Please send your phone number with country code.\n"
         "Example: +1234567890\n\n"
-        "Send /cancel to abort.",
-        parse_mode='HTML'
+        "Send /cancel to abort."
     )
     return PHONE_NUMBER
 
 
 async def receive_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     phone_number = update.message.text.strip()
-
     if not phone_number.startswith('+'):
-        await update.message.reply_text(
-            "❌ Please include country code with + sign.\nExample: +1234567890"
-        )
+        await update.message.reply_text("❌ Please include country code with + sign.\nExample: +1234567890")
         return PHONE_NUMBER
 
     try:
@@ -278,13 +261,11 @@ async def receive_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
             'phone_number': phone_number,
             'phone_code_hash': phone_code_hash
         }
-        await update.message.reply_text(
-            "✅ Verification code sent!\n\nPlease enter the code you received.\n\nSend /cancel to abort."
-        )
+        await update.message.reply_text("✅ Code sent!\n\nEnter the code you received.\n\nSend /cancel to abort.")
         return OTP_CODE
     except Exception as e:
         logger.error(f"Error in receive_phone: {e}")
-        await update.message.reply_text(f"❌ Error: {str(e)}\n\nPlease try again with /login")
+        await update.message.reply_text(f"❌ Error: {str(e)}\n\nTry again with /login")
         return ConversationHandler.END
 
 
@@ -293,35 +274,29 @@ async def receive_otp(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
     if user_id not in login_sessions:
-        await update.message.reply_text("❌ Session expired. Please start again with /login")
+        await update.message.reply_text("❌ Session expired. Start again with /login")
         return ConversationHandler.END
 
     session = login_sessions[user_id]
-
     try:
         await update.message.reply_text("🔄 Verifying code...")
         await user_client.verify_code(session['phone_number'], code, session['phone_code_hash'])
         del login_sessions[user_id]
-
         user_info = await user_client.get_me()
         await update.message.reply_text(
-            f"✅ <b>Login Successful!</b>\n\n"
+            f"✅ 𝗟𝗼𝗴𝗶𝗻 𝗦𝘂𝗰𝗰𝗲𝘀𝘀𝗳𝘂𝗹!\n\n"
             f"👤 Logged in as: {user_info.first_name}\n\n"
-            f"You can now send shortener links to bypass!",
-            parse_mode='HTML'
+            f"You can now send shortener links to bypass!"
         )
         return ConversationHandler.END
-
     except Exception as e:
         error_msg = str(e)
         if "2FA_REQUIRED" in error_msg:
-            await update.message.reply_text(
-                "🔐 Two-factor authentication is enabled.\n\nPlease send your 2FA password.\n\nSend /cancel to abort."
-            )
+            await update.message.reply_text("🔐 2FA enabled.\n\nSend your 2FA password.\n\nSend /cancel to abort.")
             return PASSWORD
         else:
             logger.error(f"Error in receive_otp: {e}")
-            await update.message.reply_text(f"❌ Verification failed: {error_msg}\n\nPlease try again with /login")
+            await update.message.reply_text(f"❌ Verification failed: {error_msg}\n\nTry again with /login")
             login_sessions.pop(user_id, None)
             return ConversationHandler.END
 
@@ -329,7 +304,6 @@ async def receive_otp(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def receive_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
     password = update.message.text
     user_id = update.effective_user.id
-
     try:
         await update.message.delete()
     except Exception:
@@ -339,20 +313,17 @@ async def receive_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=update.effective_chat.id, text="🔄 Verifying password...")
         await user_client.verify_password(password)
         login_sessions.pop(user_id, None)
-
         user_info = await user_client.get_me()
         await context.bot.send_message(
             chat_id=update.effective_chat.id,
-            text=f"✅ <b>Login Successful!</b>\n\n👤 Logged in as: {user_info.first_name}\n\nYou can now send shortener links to bypass!",
-            parse_mode='HTML'
+            text=f"✅ 𝗟𝗼𝗴𝗶𝗻 𝗦𝘂𝗰𝗰𝗲𝘀𝘀𝗳𝘂𝗹!\n\n👤 Logged in as: {user_info.first_name}\n\nYou can now send shortener links!"
         )
         return ConversationHandler.END
-
     except Exception as e:
         logger.error(f"Error in receive_password: {e}")
         await context.bot.send_message(
             chat_id=update.effective_chat.id,
-            text=f"❌ Authentication failed: {str(e)}\n\nPlease try again with /login"
+            text=f"❌ Authentication failed: {str(e)}\n\nTry again with /login"
         )
         login_sessions.pop(user_id, None)
         return ConversationHandler.END
@@ -365,95 +336,26 @@ async def cancel_login(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ---------------------------------------------------------------------------
-# Response formatter
-# ---------------------------------------------------------------------------
-
-def format_bypass_response(text: str) -> str:
-    """
-    Reformat the bypasser bot response with Unicode bold labels
-    so it looks native to our bot.
-
-    Expected input structure (lines may vary slightly):
-        Original Link :✅ <url>
-        Bypassed Link:✅ <url>
-        Time Taken : X seconds
-        ─────────────────
-        Share and Support Bot, ...
-        Powered By @Bypasser_Max_bot
-    """
-    import re
-
-    lines = text.strip().splitlines()
-    out = []
-
-    for line in lines:
-        stripped = line.strip()
-
-        # Original Link line
-        if re.match(r'(?i)original\s*link', stripped):
-            # Extract the URL part after the colon
-            parts = stripped.split(':', 1)
-            rest = parts[1].strip() if len(parts) > 1 else stripped
-            out.append(f"𝗢𝗿𝗶𝗴𝗶𝗻𝗮𝗹 𝗟𝗶𝗻𝗸 : {rest}")
-
-        # Bypassed Link line
-        elif re.match(r'(?i)bypassed\s*link', stripped):
-            parts = stripped.split(':', 1)
-            rest = parts[1].strip() if len(parts) > 1 else stripped
-            out.append(f"𝗕𝘆𝗽𝗮𝘀𝘀𝗲𝗱 𝗟𝗶𝗻𝗸 : {rest}")
-
-        # Time Taken line
-        elif re.match(r'(?i)time\s*taken', stripped):
-            parts = stripped.split(':', 1)
-            rest = parts[1].strip() if len(parts) > 1 else stripped
-            out.append(f"𝗧𝗶𝗺𝗲 𝗧𝗮𝗸𝗲𝗻 : {rest}")
-
-        # Separator line — keep as-is
-        elif re.match(r'^[─\-─]+$', stripped):
-            out.append(line)
-
-        # Powered By line — bold it
-        elif re.match(r'(?i)powered\s*by', stripped):
-            parts = stripped.split(' ', 2)
-            username = parts[2] if len(parts) > 2 else ''
-            out.append(f"𝗣𝗼𝘄𝗲𝗿𝗲𝗱 𝗕𝘆 {username}")
-
-        # Everything else (share line etc.) — keep as-is
-        else:
-            out.append(line)
-
-    return "\n".join(out)
-
-
-# ---------------------------------------------------------------------------
 # Link handler
 # ---------------------------------------------------------------------------
 
 async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await user_client.is_logged_in():
-        sent = await update.message.reply_text(
-            "❌ Bot is not connected to any account.\n\nPlease use /login first."
-        )
+        sent = await update.message.reply_text("❌ Bot is not connected.\n\nPlease use /login first.")
         schedule_delete(context.bot, update.effective_chat.id, sent.message_id)
         return
 
     link = update.message.text.strip()
-
     if not (link.startswith('http://') or link.startswith('https://')):
-        sent = await update.message.reply_text(
-            "❌ Please send a valid URL starting with http:// or https://"
-        )
+        sent = await update.message.reply_text("❌ Please send a valid URL starting with http:// or https://")
         schedule_delete(context.bot, update.effective_chat.id, sent.message_id)
         return
 
-    # Auto-delete the user's link message
+    # Delete user's link message
     schedule_delete(context.bot, update.effective_chat.id, update.message.message_id)
 
     processing_msg = await update.message.reply_text(
-        f"⏳ <b>Processing your link...</b>\n"
-        f"Sending to bypasser bot\n\n"
-        f"⏱️ Please wait...",
-        parse_mode='HTML'
+        "⏳ 𝗣𝗿𝗼𝗰𝗲𝘀𝘀𝗶𝗻𝗴 𝘆𝗼𝘂𝗿 𝗹𝗶𝗻𝗸...\n\n⏱️ Please wait..."
     )
 
     response_received = {'status': False}
@@ -467,16 +369,10 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
 
             if message.text:
-                # Replace bypasser bot username with ours
-                clean_text = message.text.replace('@Nick_Bypass_Bot', '@Bypasser_Max_bot')
-
-                # Reformat the message with Unicode bold headings
-                formatted = format_bypass_response(clean_text)
-
+                formatted = format_bypass_response(message.text)
                 sent = await context.bot.send_message(
                     chat_id=update.effective_chat.id,
-                    text=formatted,
-                    parse_mode='HTML'
+                    text=formatted
                 )
                 schedule_delete(context.bot, update.effective_chat.id, sent.message_id)
             elif message.media or message.document:
@@ -495,7 +391,7 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 sent = await context.bot.send_message(
                     chat_id=update.effective_chat.id,
-                    text=f"❌ Error processing response: {str(e)}"
+                    text=f"❌ Error: {str(e)}"
                 )
                 schedule_delete(context.bot, update.effective_chat.id, sent.message_id)
             except Exception:
@@ -510,8 +406,7 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not response_received['status']:
             try:
                 await processing_msg.edit_text(
-                    "⏳ <b>Still processing...</b>\n\nThe bypasser bot is taking longer than usual.",
-                    parse_mode='HTML'
+                    "⏳ 𝗦𝘁𝗶𝗹𝗹 𝗽𝗿𝗼𝗰𝗲𝘀𝘀𝗶𝗻𝗴...\n\nThe bypasser is taking longer than usual."
                 )
                 schedule_delete(context.bot, update.effective_chat.id, processing_msg.message_id)
             except Exception:
