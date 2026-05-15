@@ -352,6 +352,13 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------------------------------------------------------------------------
 
 async def post_init(application: Application):
+    # Delete any stale webhook — this also clears the conflict lock on Telegram's side
+    try:
+        await application.bot.delete_webhook(drop_pending_updates=True)
+        logger.info("Webhook cleared — polling mode ready")
+    except Exception as e:
+        logger.warning(f"Could not clear webhook: {e}")
+
     try:
         if await user_client.is_logged_in():
             await user_client.start()
@@ -425,16 +432,35 @@ def main():
             async with application:
                 await application.initialize()
                 await application.start()
-                await application.updater.start_polling(
-                    allowed_updates=Update.ALL_TYPES,
-                    drop_pending_updates=True
-                )
-                logger.info("✅ Bot is running")
+
+                # Retry polling start in case old instance is still shutting down
+                for attempt in range(10):
+                    try:
+                        await application.updater.start_polling(
+                            allowed_updates=Update.ALL_TYPES,
+                            drop_pending_updates=True
+                        )
+                        logger.info("✅ Bot is running")
+                        break
+                    except Exception as e:
+                        if "Conflict" in str(e) or "409" in str(e):
+                            wait = (attempt + 1) * 5
+                            logger.warning(
+                                f"Conflict: another instance still running. "
+                                f"Retrying in {wait}s... (attempt {attempt + 1}/10)"
+                            )
+                            await asyncio.sleep(wait)
+                        else:
+                            raise
+
                 # Wait here until a shutdown signal arrives
                 await stop_event.wait()
         finally:
             logger.info("Shutting down...")
-            await application.updater.stop()
+            try:
+                await application.updater.stop()
+            except Exception:
+                pass
             await application.stop()
             await application.shutdown()
             await health_runner.cleanup()
