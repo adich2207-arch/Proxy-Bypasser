@@ -57,8 +57,38 @@ def schedule_delete(bot, chat_id, message_id, delay=AUTO_DELETE_DELAY):
     asyncio.create_task(auto_delete(bot, chat_id, message_id, delay))
 
 
-def start_keyboard():
-    """Inline keyboard for the /start message."""
+def clean_bypasser_response(text: str) -> str:
+    """
+    Extract only the bypassed link from the bypasser bot response
+    and present it cleanly — no mention of the original bot.
+    """
+    import re
+
+    bypassed_url = None
+
+    # Look for "Bypassed Link:" line and grab the URL from it
+    match = re.search(r'Bypassed Link[:\s]*✅?\s*(https?://\S+)', text, re.IGNORECASE)
+    if match:
+        bypassed_url = match.group(1).strip()
+
+    # Fallback: grab the second URL in the message (first = original, second = bypassed)
+    if not bypassed_url:
+        urls = re.findall(r'https?://\S+', text)
+        if len(urls) >= 2:
+            bypassed_url = urls[1]
+        elif len(urls) == 1:
+            bypassed_url = urls[0]
+
+    if bypassed_url:
+        return (
+            "✅ 𝗕𝘆𝗽𝗮𝘀𝘀𝗲𝗱 𝗦𝘂𝗰𝗰𝗲𝘀𝘀𝗳𝘂𝗹𝗹𝘆!\n\n"
+            f"🔗 𝗗𝗶𝗿𝗲𝗰𝘁 𝗟𝗶𝗻𝗸:\n{bypassed_url}\n\n"
+            "━━━━━━━━━━━━━━━━━━━\n"
+            "🗑 𝗧𝗵𝗶𝘀 𝗺𝗲𝘀𝘀𝗮𝗴𝗲 𝘄𝗶𝗹𝗹 𝗯𝗲 𝗱𝗲𝗹𝗲𝘁𝗲𝗱 𝗮𝘂𝘁𝗼𝗺𝗮𝘁𝗶𝗰𝗮𝗹𝗹𝘆."
+        )
+
+    # If we couldn't extract a URL, return a generic success message
+    return "✅ 𝗕𝘆𝗽𝗮𝘀𝘀𝗲𝗱 𝗦𝘂𝗰𝗰𝗲𝘀𝘀𝗳𝘂𝗹𝗹𝘆!\n\nYour link has been bypassed."
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("🆘 Help", callback_data="help"),
@@ -335,6 +365,67 @@ async def cancel_login(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ---------------------------------------------------------------------------
+# Response formatter
+# ---------------------------------------------------------------------------
+
+def format_bypass_response(text: str) -> str:
+    """
+    Reformat the bypasser bot response with Unicode bold labels
+    so it looks native to our bot.
+
+    Expected input structure (lines may vary slightly):
+        Original Link :✅ <url>
+        Bypassed Link:✅ <url>
+        Time Taken : X seconds
+        ─────────────────
+        Share and Support Bot, ...
+        Powered By @Bypasser_Max_bot
+    """
+    import re
+
+    lines = text.strip().splitlines()
+    out = []
+
+    for line in lines:
+        stripped = line.strip()
+
+        # Original Link line
+        if re.match(r'(?i)original\s*link', stripped):
+            # Extract the URL part after the colon
+            parts = stripped.split(':', 1)
+            rest = parts[1].strip() if len(parts) > 1 else stripped
+            out.append(f"𝗢𝗿𝗶𝗴𝗶𝗻𝗮𝗹 𝗟𝗶𝗻𝗸 : {rest}")
+
+        # Bypassed Link line
+        elif re.match(r'(?i)bypassed\s*link', stripped):
+            parts = stripped.split(':', 1)
+            rest = parts[1].strip() if len(parts) > 1 else stripped
+            out.append(f"𝗕𝘆𝗽𝗮𝘀𝘀𝗲𝗱 𝗟𝗶𝗻𝗸 : {rest}")
+
+        # Time Taken line
+        elif re.match(r'(?i)time\s*taken', stripped):
+            parts = stripped.split(':', 1)
+            rest = parts[1].strip() if len(parts) > 1 else stripped
+            out.append(f"𝗧𝗶𝗺𝗲 𝗧𝗮𝗸𝗲𝗻 : {rest}")
+
+        # Separator line — keep as-is
+        elif re.match(r'^[─\-─]+$', stripped):
+            out.append(line)
+
+        # Powered By line — bold it
+        elif re.match(r'(?i)powered\s*by', stripped):
+            parts = stripped.split(' ', 2)
+            username = parts[2] if len(parts) > 2 else ''
+            out.append(f"𝗣𝗼𝘄𝗲𝗿𝗲𝗱 𝗕𝘆 {username}")
+
+        # Everything else (share line etc.) — keep as-is
+        else:
+            out.append(line)
+
+    return "\n".join(out)
+
+
+# ---------------------------------------------------------------------------
 # Link handler
 # ---------------------------------------------------------------------------
 
@@ -376,9 +467,15 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
 
             if message.text:
+                # Replace bypasser bot username with ours
+                clean_text = message.text.replace('@Nick_Bypass_Bot', '@Bypasser_Max_bot')
+
+                # Reformat the message with Unicode bold headings
+                formatted = format_bypass_response(clean_text)
+
                 sent = await context.bot.send_message(
                     chat_id=update.effective_chat.id,
-                    text=f"✅ <b>Bypassed Successfully!</b>\n\n{message.text}",
+                    text=formatted,
                     parse_mode='HTML'
                 )
                 schedule_delete(context.bot, update.effective_chat.id, sent.message_id)
