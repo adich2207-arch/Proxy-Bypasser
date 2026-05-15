@@ -1,6 +1,10 @@
 import asyncio
 import logging
-from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
+import os
+import signal
+
+from aiohttp import web
+from telegram import Update, ReplyKeyboardRemove
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -12,7 +16,6 @@ from telegram.ext import (
 from user_client import user_client
 from config import BOT_TOKEN, validate_config, BYPASSER_BOT_USERNAME
 
-# Enable logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
@@ -22,17 +25,41 @@ logger = logging.getLogger(__name__)
 # Conversation states
 PHONE_NUMBER, OTP_CODE, PASSWORD = range(3)
 
-# Store login sessions temporarily
+# Temporary login sessions
 login_sessions = {}
 
+# Render injects PORT; default 8080
+PORT = int(os.environ.get('PORT', 8080))
+
+
+# ---------------------------------------------------------------------------
+# Health-check server — required so Render marks deploy as "live"
+# ---------------------------------------------------------------------------
+
+async def health_handler(request):
+    return web.Response(text="OK", status=200)
+
+
+async def start_health_server():
+    app = web.Application()
+    app.router.add_get('/', health_handler)
+    app.router.add_get('/health', health_handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', PORT)
+    await site.start()
+    logger.info(f"Health server listening on port {PORT}")
+    return runner
+
+
+# ---------------------------------------------------------------------------
+# Command handlers
+# ---------------------------------------------------------------------------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /start command"""
     user = update.effective_user
-    
-    # Check if user client is logged in
     is_logged_in = await user_client.is_logged_in()
-    
+
     if is_logged_in:
         user_info = await user_client.get_me()
         await update.message.reply_text(
@@ -57,7 +84,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /help command"""
     await update.message.reply_text(
         "📖 *How to use this bot:*\n\n"
         "1️⃣ First, login with your Telegram account using /login\n"
@@ -77,78 +103,48 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Test command to verify bypasser bot connection"""
-    is_logged_in = await user_client.is_logged_in()
-    
-    if not is_logged_in:
-        await update.message.reply_text(
-            "❌ Not logged in. Use /login first."
-        )
+    if not await user_client.is_logged_in():
+        await update.message.reply_text("❌ Not logged in. Use /login first.")
         return
-    
-    await update.message.reply_text(
-        "🧪 Testing connection to bypasser bot...\n"
-        "Sending test message: 'test'"
-    )
-    
+
+    await update.message.reply_text("🧪 Testing connection to bypasser bot...")
     try:
-        # Send test message
         test_msg = await user_client.client.send_message(BYPASSER_BOT_USERNAME, "test")
         await update.message.reply_text(
-            f"✅ Test message sent successfully!\n"
-            f"Message ID: {test_msg.id}\n\n"
-            f"Check if bypasser bot responds. If it does, the bot should forward the response to you."
+            f"✅ Test message sent! Message ID: {test_msg.id}\n\n"
+            f"Check if bypasser bot responds."
         )
     except Exception as e:
-        await update.message.reply_text(
-            f"❌ Error sending test message: {str(e)}"
-        )
+        await update.message.reply_text(f"❌ Error: {str(e)}")
 
 
 async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show debug information"""
-    is_logged_in = await user_client.is_logged_in()
-    
-    if not is_logged_in:
-        await update.message.reply_text(
-            "❌ Not logged in. Use /login first."
-        )
+    if not await user_client.is_logged_in():
+        await update.message.reply_text("❌ Not logged in. Use /login first.")
         return
-    
-    pending_count = len(user_client.pending_requests)
-    bypasser_id = user_client.bypasser_bot_id
-    
-    debug_info = (
+
+    await update.message.reply_text(
         f"🔍 *Debug Information*\n\n"
-        f"*Connection:*\n"
-        f"Logged in: {'✅ Yes' if is_logged_in else '❌ No'}\n"
+        f"Logged in: ✅ Yes\n"
         f"Bypasser bot: @{BYPASSER_BOT_USERNAME}\n"
-        f"Bypasser bot ID: {bypasser_id if bypasser_id else '❌ Not found'}\n\n"
-        f"*Requests:*\n"
-        f"Pending requests: {pending_count}\n"
-        f"Timeout: {user_client.response_timeout}s\n\n"
-        f"*Event Handler:*\n"
-        f"Listening for: All incoming messages\n"
-        f"Filtering by: Username match\n\n"
-        f"Send a test link to see if responses are captured."
+        f"Bypasser bot ID: {user_client.bypasser_bot_id or '❌ Not found'}\n"
+        f"Pending requests: {len(user_client.pending_requests)}\n"
+        f"Timeout: {user_client.response_timeout}s",
+        parse_mode='Markdown'
     )
-    
-    await update.message.reply_text(debug_info, parse_mode='Markdown')
 
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /status command"""
     is_logged_in = await user_client.is_logged_in()
-    
+
     if is_logged_in:
         user_info = await user_client.get_me()
-        pending_count = len(user_client.pending_requests)
         await update.message.reply_text(
             f"✅ *Status: Connected*\n\n"
             f"👤 Account: {user_info.first_name}\n"
             f"📱 Phone: {user_info.phone}\n"
             f"🤖 Bypasser: @{BYPASSER_BOT_USERNAME}\n"
-            f"⏳ Pending requests: {pending_count}\n\n"
+            f"⏳ Pending requests: {len(user_client.pending_requests)}\n\n"
             f"Ready to bypass links!",
             parse_mode='Markdown'
         )
@@ -161,16 +157,10 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def login_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Start the login conversation"""
-    is_logged_in = await user_client.is_logged_in()
-    
-    if is_logged_in:
-        await update.message.reply_text(
-            "✅ You are already logged in!\n\n"
-            "Use /status to see connection details."
-        )
+    if await user_client.is_logged_in():
+        await update.message.reply_text("✅ Already logged in! Use /status to see details.")
         return ConversationHandler.END
-    
+
     await update.message.reply_text(
         "🔐 *Login Process*\n\n"
         "Please send your phone number with country code.\n"
@@ -182,68 +172,46 @@ async def login_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def receive_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Receive phone number and send OTP"""
     phone_number = update.message.text.strip()
-    
+
     if not phone_number.startswith('+'):
         await update.message.reply_text(
-            "❌ Please include country code with + sign.\n"
-            "Example: +1234567890"
+            "❌ Please include country code with + sign.\nExample: +1234567890"
         )
         return PHONE_NUMBER
-    
+
     try:
         await update.message.reply_text("📤 Sending verification code...")
-        
         phone_code_hash = await user_client.login_with_phone(phone_number)
-        
-        # Store session data
         login_sessions[update.effective_user.id] = {
             'phone_number': phone_number,
             'phone_code_hash': phone_code_hash
         }
-        
         await update.message.reply_text(
-            "✅ Verification code sent!\n\n"
-            "Please enter the code you received.\n\n"
-            "Send /cancel to abort."
+            "✅ Verification code sent!\n\nPlease enter the code you received.\n\nSend /cancel to abort."
         )
         return OTP_CODE
-        
     except Exception as e:
         logger.error(f"Error in receive_phone: {e}")
-        await update.message.reply_text(
-            f"❌ Error: {str(e)}\n\n"
-            "Please try again with /login"
-        )
+        await update.message.reply_text(f"❌ Error: {str(e)}\n\nPlease try again with /login")
         return ConversationHandler.END
 
 
 async def receive_otp(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Receive and verify OTP code"""
     code = update.message.text.strip()
     user_id = update.effective_user.id
-    
+
     if user_id not in login_sessions:
-        await update.message.reply_text(
-            "❌ Session expired. Please start again with /login"
-        )
+        await update.message.reply_text("❌ Session expired. Please start again with /login")
         return ConversationHandler.END
-    
+
     session = login_sessions[user_id]
-    
+
     try:
         await update.message.reply_text("🔄 Verifying code...")
-        
-        await user_client.verify_code(
-            session['phone_number'],
-            code,
-            session['phone_code_hash']
-        )
-        
-        # Clean up session
+        await user_client.verify_code(session['phone_number'], code, session['phone_code_hash'])
         del login_sessions[user_id]
-        
+
         user_info = await user_client.get_me()
         await update.message.reply_text(
             f"✅ *Login Successful!*\n\n"
@@ -252,265 +220,227 @@ async def receive_otp(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode='Markdown'
         )
         return ConversationHandler.END
-        
+
     except Exception as e:
         error_msg = str(e)
-        
         if "2FA_REQUIRED" in error_msg:
             await update.message.reply_text(
-                "🔐 Two-factor authentication is enabled.\n\n"
-                "Please send your 2FA password.\n\n"
-                "Send /cancel to abort."
+                "🔐 Two-factor authentication is enabled.\n\nPlease send your 2FA password.\n\nSend /cancel to abort."
             )
             return PASSWORD
         else:
             logger.error(f"Error in receive_otp: {e}")
-            await update.message.reply_text(
-                f"❌ Verification failed: {error_msg}\n\n"
-                "Please try again with /login"
-            )
-            # Clean up session
-            if user_id in login_sessions:
-                del login_sessions[user_id]
+            await update.message.reply_text(f"❌ Verification failed: {error_msg}\n\nPlease try again with /login")
+            login_sessions.pop(user_id, None)
             return ConversationHandler.END
 
 
 async def receive_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Receive and verify 2FA password"""
     password = update.message.text
     user_id = update.effective_user.id
-    
-    # Delete the password message for security
-    await update.message.delete()
-    
+
     try:
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text="🔄 Verifying password..."
-        )
-        
+        await update.message.delete()
+    except Exception:
+        pass
+
+    try:
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="🔄 Verifying password...")
         await user_client.verify_password(password)
-        
-        # Clean up session
-        if user_id in login_sessions:
-            del login_sessions[user_id]
-        
+        login_sessions.pop(user_id, None)
+
         user_info = await user_client.get_me()
         await context.bot.send_message(
             chat_id=update.effective_chat.id,
-            text=f"✅ *Login Successful!*\n\n"
-                 f"👤 Logged in as: {user_info.first_name}\n\n"
-                 f"You can now send shortener links to bypass!",
+            text=f"✅ *Login Successful!*\n\n👤 Logged in as: {user_info.first_name}\n\nYou can now send shortener links to bypass!",
             parse_mode='Markdown'
         )
         return ConversationHandler.END
-        
+
     except Exception as e:
         logger.error(f"Error in receive_password: {e}")
         await context.bot.send_message(
             chat_id=update.effective_chat.id,
-            text=f"❌ Authentication failed: {str(e)}\n\n"
-                 "Please try again with /login"
+            text=f"❌ Authentication failed: {str(e)}\n\nPlease try again with /login"
         )
-        # Clean up session
-        if user_id in login_sessions:
-            del login_sessions[user_id]
+        login_sessions.pop(user_id, None)
         return ConversationHandler.END
 
 
 async def cancel_login(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Cancel the login process"""
-    user_id = update.effective_user.id
-    if user_id in login_sessions:
-        del login_sessions[user_id]
-    
-    await update.message.reply_text(
-        "❌ Login cancelled.",
-        reply_markup=ReplyKeyboardRemove()
-    )
+    login_sessions.pop(update.effective_user.id, None)
+    await update.message.reply_text("❌ Login cancelled.", reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
 
 
 async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle shortener links sent by users"""
-    # Check if logged in
-    is_logged_in = await user_client.is_logged_in()
-    
-    if not is_logged_in:
+    if not await user_client.is_logged_in():
         await update.message.reply_text(
-            "❌ Bot is not connected to any account.\n\n"
-            "Please use /login first to connect your Telegram account."
+            "❌ Bot is not connected to any account.\n\nPlease use /login first."
         )
         return
-    
+
     link = update.message.text.strip()
-    
-    # Basic URL validation
+
     if not (link.startswith('http://') or link.startswith('https://')):
-        await update.message.reply_text(
-            "❌ Please send a valid URL starting with http:// or https://"
-        )
+        await update.message.reply_text("❌ Please send a valid URL starting with http:// or https://")
         return
-    
-    # Send processing message
+
     processing_msg = await update.message.reply_text(
-        "⏳ Processing your link...\n"
-        f"Sending to @{BYPASSER_BOT_USERNAME}\n\n"
-        "⏱️ Waiting for response..."
+        f"⏳ Processing your link...\nSending to @{BYPASSER_BOT_USERNAME}\n\n⏱️ Waiting for response..."
     )
-    
-    # Track if response was received
+
     response_received = {'status': False}
-    
-    # Define callback for when bypasser responds
+
     async def handle_response(message):
-        """Handle response from bypasser bot"""
         try:
             response_received['status'] = True
-            logger.info(f"Processing response for user {update.effective_chat.id}")
-            
-            # Delete processing message
             try:
                 await processing_msg.delete()
-            except Exception as e:
-                logger.warning(f"Could not delete processing message: {e}")
-            
-            # Forward the response to user
+            except Exception:
+                pass
+
             if message.text:
-                # Send text response
                 await context.bot.send_message(
                     chat_id=update.effective_chat.id,
                     text=f"✅ *Bypassed Content:*\n\n{message.text}",
                     parse_mode='Markdown',
                     reply_to_message_id=update.message.message_id
                 )
-                logger.info(f"Sent text response to user {update.effective_chat.id}")
-            elif message.media:
-                # Forward media messages
+            elif message.media or message.document:
                 await message.forward_to(update.effective_chat.id)
-                logger.info(f"Forwarded media to user {update.effective_chat.id}")
-            elif message.document:
-                # Forward documents
-                await message.forward_to(update.effective_chat.id)
-                logger.info(f"Forwarded document to user {update.effective_chat.id}")
             else:
                 await context.bot.send_message(
                     chat_id=update.effective_chat.id,
-                    text="✅ Content bypassed! (Check above)",
+                    text="✅ Content bypassed!",
                     reply_to_message_id=update.message.message_id
                 )
-                
         except Exception as e:
-            logger.error(f"Error handling response: {e}", exc_info=True)
+            logger.error(f"Error in handle_response: {e}", exc_info=True)
             try:
                 await context.bot.send_message(
                     chat_id=update.effective_chat.id,
-                    text=f"❌ Error processing response: {str(e)}",
-                    reply_to_message_id=update.message.message_id
+                    text=f"❌ Error processing response: {str(e)}"
                 )
-            except:
+            except Exception:
                 pass
-    
-    # Send to bypasser bot
+
     try:
         await user_client.send_to_bypasser(
-            link,
-            update.effective_chat.id,
-            update.message.message_id,
-            handle_response
+            link, update.effective_chat.id, update.message.message_id, handle_response
         )
-        logger.info(f"Link sent to bypasser for user {update.effective_chat.id}")
-        
-        # Wait a bit and check if response was received
-        await asyncio.sleep(30)  # Wait 30 seconds
-        
+        await asyncio.sleep(30)
+
         if not response_received['status']:
             try:
                 await processing_msg.edit_text(
-                    "⏳ Still waiting for response from bypasser bot...\n"
-                    "This may take a moment."
+                    "⏳ Still waiting for response from bypasser bot...\nThis may take a moment."
                 )
-            except:
+            except Exception:
                 pass
-                
+
     except Exception as e:
         logger.error(f"Error sending to bypasser: {e}", exc_info=True)
         try:
-            await processing_msg.edit_text(
-                f"❌ Error: {str(e)}\n\n"
-                "Please try again or contact support."
-            )
-        except:
+            await processing_msg.edit_text(f"❌ Error: {str(e)}\n\nPlease try again.")
+        except Exception:
             pass
 
 
+# ---------------------------------------------------------------------------
+# Lifecycle
+# ---------------------------------------------------------------------------
+
 async def post_init(application: Application):
-    """Initialize user client after bot starts"""
     try:
-        # Check if already authorized before starting
-        is_authorized = await user_client.is_logged_in()
-        
-        if is_authorized:
+        if await user_client.is_logged_in():
             await user_client.start()
             logger.info("User client initialized and logged in")
         else:
-            logger.warning("User client not logged in - user needs to use /login command")
-            # Don't start the client if not logged in, it will prompt for phone
-            
+            logger.warning("User client not logged in — use /login after deploy")
     except Exception as e:
         logger.error(f"Error initializing user client: {e}")
-        logger.warning("User client not started - user needs to use /login command")
 
 
 async def post_shutdown(application: Application):
-    """Cleanup when bot stops"""
     try:
         await user_client.stop()
-        logger.info("User client stopped")
     except Exception as e:
         logger.error(f"Error stopping user client: {e}")
 
 
+# ---------------------------------------------------------------------------
+# Main — runs health server + bot together, handles SIGTERM cleanly
+# ---------------------------------------------------------------------------
+
 def main():
-    """Start the bot"""
-    try:
-        # Validate configuration
-        validate_config()
-        
-        # Create application
-        application = Application.builder().token(BOT_TOKEN).post_init(post_init).post_shutdown(post_shutdown).build()
-        
-        # Login conversation handler
-        login_conv_handler = ConversationHandler(
-            entry_points=[CommandHandler('login', login_start)],
-            states={
-                PHONE_NUMBER: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_phone)],
-                OTP_CODE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_otp)],
-                PASSWORD: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_password)],
-            },
-            fallbacks=[CommandHandler('cancel', cancel_login)],
-        )
-        
-        # Add handlers
-        application.add_handler(CommandHandler('start', start))
-        application.add_handler(CommandHandler('help', help_command))
-        application.add_handler(CommandHandler('status', status_command))
-        application.add_handler(CommandHandler('test', test_command))
-        application.add_handler(CommandHandler('debug', debug_command))
-        application.add_handler(login_conv_handler)
-        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_link))
-        
-        # Start bot
-        logger.info("Starting bot on Render...")
-        logger.info("Bot is running and ready to receive messages")
-        application.run_polling(
-            allowed_updates=Update.ALL_TYPES,
-            drop_pending_updates=True
-        )
-        
-    except Exception as e:
-        logger.error(f"Error starting bot: {e}")
-        raise
+    validate_config()
+
+    application = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .post_init(post_init)
+        .post_shutdown(post_shutdown)
+        .build()
+    )
+
+    login_conv = ConversationHandler(
+        entry_points=[CommandHandler('login', login_start)],
+        states={
+            PHONE_NUMBER: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_phone)],
+            OTP_CODE:     [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_otp)],
+            PASSWORD:     [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_password)],
+        },
+        fallbacks=[CommandHandler('cancel', cancel_login)],
+    )
+
+    application.add_handler(CommandHandler('start', start))
+    application.add_handler(CommandHandler('help', help_command))
+    application.add_handler(CommandHandler('status', status_command))
+    application.add_handler(CommandHandler('test', test_command))
+    application.add_handler(CommandHandler('debug', debug_command))
+    application.add_handler(login_conv)
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_link))
+
+    async def run():
+        # Start health-check server first — Render checks this port to confirm deploy
+        health_runner = await start_health_server()
+
+        # Set up graceful shutdown on SIGTERM (Render sends this to stop the service)
+        stop_event = asyncio.Event()
+
+        def _handle_signal():
+            logger.info("Received shutdown signal")
+            stop_event.set()
+
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            try:
+                loop.add_signal_handler(sig, _handle_signal)
+            except NotImplementedError:
+                # Windows doesn't support add_signal_handler for all signals
+                pass
+
+        try:
+            async with application:
+                await application.initialize()
+                await application.start()
+                await application.updater.start_polling(
+                    allowed_updates=Update.ALL_TYPES,
+                    drop_pending_updates=True
+                )
+                logger.info("✅ Bot is running")
+                # Wait here until a shutdown signal arrives
+                await stop_event.wait()
+        finally:
+            logger.info("Shutting down...")
+            await application.updater.stop()
+            await application.stop()
+            await application.shutdown()
+            await health_runner.cleanup()
+            logger.info("Shutdown complete")
+
+    asyncio.run(run())
 
 
 if __name__ == '__main__':
