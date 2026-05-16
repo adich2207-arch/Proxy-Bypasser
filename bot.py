@@ -30,6 +30,36 @@ login_sessions = {}
 PORT = int(os.environ.get('PORT', 8080))
 AUTO_DELETE_DELAY = 10 * 60
 DEVELOPER_USERNAME = "Mr_1X8"
+FORCE_CHANNEL = "Max_Bypasser_Updates"  # without @
+
+
+# ---------------------------------------------------------------------------
+# Force channel check
+# ---------------------------------------------------------------------------
+
+async def is_member(bot, user_id: int) -> bool:
+    """Return True if user is a member of the force channel."""
+    try:
+        member = await bot.get_chat_member(chat_id=f"@{FORCE_CHANNEL}", user_id=user_id)
+        return member.status not in ("left", "kicked", "banned")
+    except Exception:
+        # If check fails (bot not admin in channel etc.), let user through
+        return True
+
+
+async def send_join_message(update: Update):
+    """Send the 'please join' message with inline button."""
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("📢 Join Channel", url=f"https://t.me/{FORCE_CHANNEL}"),
+        InlineKeyboardButton("✅ I Joined", callback_data="check_join"),
+    ]])
+    await update.message.reply_text(
+        f"👋 Welcome!\n\n"
+        f"To use this bot you must join our channel first.\n\n"
+        f"📢 @{FORCE_CHANNEL}\n\n"
+        f"After joining, tap ✅ I Joined below.",
+        reply_markup=keyboard
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -223,6 +253,10 @@ async def start_health_server():
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
+    # Force channel check
+    if not await is_member(context.bot, user.id):
+        await send_join_message(update)
+        return
     stats.register_user(user)
     text = (
         f"👋 𝗛𝗲𝗹𝗹𝗼, {user.first_name}!\n\n"
@@ -249,6 +283,40 @@ async def help_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     sent = await query.message.reply_text(help_text())
     schedule_delete(context.bot, query.message.chat_id, sent.message_id)
+
+
+async def check_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle 'I Joined' button — recheck membership."""
+    query = update.callback_query
+    user = query.from_user
+
+    if await is_member(context.bot, user.id):
+        await query.answer("✅ Verified! You can now use the bot.", show_alert=False)
+        await query.message.delete()
+        # Send the start message now
+        stats.register_user(user)
+        text = (
+            f"👋 𝗛𝗲𝗹𝗹𝗼, {user.first_name}!\n\n"
+            f"I am a 𝗟𝗶𝗻𝗸 𝗕𝘆𝗽𝗮𝘀𝘀𝗲𝗿 𝗕𝗼𝘁. I can bypass shortlinks and ad-gates for you.\n\n"
+            f"━━━━━━━━━━━━━━━━━━━\n\n"
+            f"🔗 𝗧𝗼 𝗯𝘆𝗽𝗮𝘀𝘀 𝗮 𝗹𝗶𝗻𝗸\n"
+            f"Simply paste any shortlink here (one at a time).\n\n"
+            f"🗑 𝗔𝘂𝘁𝗼-𝗱𝗲𝗹𝗲𝘁𝗲\n"
+            f"All my replies are automatically deleted after a few minutes to keep your chat clean and private.\n\n"
+            f"━━━━━━━━━━━━━━━━━━━\n\n"
+            f"Use /help to see all available commands."
+        )
+        sent = await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text=text,
+            reply_markup=start_keyboard()
+        )
+        schedule_delete(context.bot, query.message.chat_id, sent.message_id)
+    else:
+        await query.answer(
+            f"❌ You haven't joined @{FORCE_CHANNEL} yet. Please join first!",
+            show_alert=True
+        )
 
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -484,6 +552,10 @@ async def cancel_login(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
+    # Force channel check
+    if not await is_member(context.bot, user.id):
+        await send_join_message(update)
+        return
     stats.register_user(user)
 
     if not await user_client.is_logged_in():
@@ -611,6 +683,7 @@ def main():
     application.add_handler(CommandHandler('users', users_command))
     application.add_handler(login_conv)
     application.add_handler(CallbackQueryHandler(help_callback, pattern='^help$'))
+    application.add_handler(CallbackQueryHandler(check_join_callback, pattern='^check_join$'))
     application.add_handler(CallbackQueryHandler(admin_callback, pattern='^admin_'))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_link))
 
